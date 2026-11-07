@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from urllib.parse import quote, urlsplit
 from collections.abc import Sequence
 from typing import Any
 
@@ -27,6 +28,7 @@ from app.schemas.sensors import SensorReading
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+logging.getLogger("psycopg.pool").setLevel(logging.ERROR)
 
 INSERT_SQL = """
     insert into sensor_readings (time, session_id, source, sensor_id, metric_name, metric_value, metadata)
@@ -45,6 +47,8 @@ class TigerDataError(RuntimeError):
 
 
 def tigerdata_url() -> str:
+    """The service URL from TIGERDATA_URL. If it has no password, TIGERDATA_PASSWORD (optional) supplies it,
+    which suits the Tiger console's URL (shown without the password). Never log the returned value."""
     url = os.environ.get("TIGERDATA_URL", "").strip()
     if not url:
         raise TigerDataConfigError("TIGERDATA_URL is not set. See TIGERDATA_SETUP.md.")
@@ -52,7 +56,45 @@ def tigerdata_url() -> str:
         raise TigerDataConfigError("TIGERDATA_URL must be a postgres:// service URL from the Tiger Console.")
     if "PASSWORD@" in url or "your-" in url:
         raise TigerDataConfigError("TIGERDATA_URL still contains placeholder values.")
+    extra = os.environ.get("TIGERDATA_PASSWORD", "").strip()
+    parts = urlsplit(url)
+    if extra and parts.password is None and parts.hostname:
+        host = parts.hostname + (f":{parts.port}" if parts.port else "")
+        netloc = f"{parts.username or ''}:{quote(extra, safe='')}@{host}"
+        url = parts._replace(netloc=netloc).geturl()
     return url
+
+
+def describe_url() -> dict[str, object]:
+    """Non-secret shape of the configured URL, to help debug mistakes. Contains no password."""
+    parts = urlsplit(tigerdata_url())
+    return {
+        "user": parts.username,
+        "has_password": bool(parts.password),
+        "host": parts.hostname,
+        "port": parts.port,
+        "database": parts.path.lstrip("/") or None,
+        "sslmode": dict(q.split("=", 1) for q in parts.query.split("&") if "=" in q).get("sslmode"),
+    }
+
+
+def diagnose_connection() -> str:
+    """One direct connection attempt, classified WITHOUT exposing any message text:
+    ok | no_password | wrong_password | ssl | unreachable | other."""
+    try:
+        psycopg.connect(tigerdata_url(), connect_timeout=8).close()
+        return "ok"
+    except psycopg.Error as exc:
+        msg = str(exc).lower()
+        if "no password supplied" in msg:
+            return "no_password"
+        if "password authentication failed" in msg:
+            return "wrong_password"
+        if "ssl" in msg or "tls" in msg:
+            return "ssl"
+        if any(k in msg for k in ("timeout", "refused", "translate host", "name or service", "network is unreachable")):
+            return "unreachable"
+        return "other"
 
 
 def is_configured() -> bool:

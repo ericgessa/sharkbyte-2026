@@ -168,3 +168,69 @@ def test_unconfigured_store_reports_not_configured(monkeypatch):
     assert ts.TigerStore().configured is False
     with pytest.raises(ts.TigerDataConfigError):
         ts.TigerStore().insert_readings([reading(0)])
+
+
+# ---- password kept separate from the URL ------------------------------------
+
+NO_PW_URL = "postgres://tsdbadmin@abc123.tsdb.cloud.timescale.com:30643/tsdb?sslmode=require"
+
+
+def test_separate_password_is_url_encoded_and_inserted(monkeypatch):
+    monkeypatch.setenv("TIGERDATA_URL", NO_PW_URL)
+    monkeypatch.setenv("TIGERDATA_PASSWORD", "p@ss:w/rd#1 %")
+    url = ts.tigerdata_url()
+    assert url.startswith("postgres://tsdbadmin:p%40ss%3Aw%2Frd%231%20%25@abc123.tsdb.cloud.timescale.com:30643/tsdb")
+    assert url.endswith("?sslmode=require")
+    from urllib.parse import urlsplit, unquote
+    assert unquote(urlsplit(url).password) == "p@ss:w/rd#1 %"  # round-trips exactly
+
+
+def test_password_in_the_url_wins_over_the_separate_variable(monkeypatch):
+    monkeypatch.setenv("TIGERDATA_URL", SECRET_URL)
+    monkeypatch.setenv("TIGERDATA_PASSWORD", "something-else")
+    assert ts.tigerdata_url() == SECRET_URL
+
+
+def test_describe_url_reports_shape_but_never_the_password(monkeypatch):
+    monkeypatch.setenv("TIGERDATA_URL", NO_PW_URL)
+    d = ts.describe_url()
+    assert d["has_password"] is False and d["user"] == "tsdbadmin" and d["port"] == 30643 and d["database"] == "tsdb"
+    monkeypatch.setenv("TIGERDATA_PASSWORD", "TopSecret99")
+    d = ts.describe_url()
+    assert d["has_password"] is True and "TopSecret99" not in repr(d)
+
+
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("connection failed: fe_sendauth: no password supplied", "no_password"),
+        ('FATAL: password authentication failed for user "tsdbadmin"', "wrong_password"),
+        ("SSL connection has been closed unexpectedly", "ssl"),
+        ("connection timeout expired", "unreachable"),
+        ("could not translate host name", "unreachable"),
+        ("something strange", "other"),
+    ],
+)
+def test_diagnose_connection_classifies_without_leaking_the_message(monkeypatch, message, expected):
+    import psycopg
+
+    monkeypatch.setenv("TIGERDATA_URL", NO_PW_URL)
+
+    def boom(*a, **k):
+        raise psycopg.OperationalError(message)
+
+    monkeypatch.setattr(psycopg, "connect", boom)
+    assert ts.diagnose_connection() == expected
+
+
+def test_diagnose_connection_ok(monkeypatch):
+    import psycopg
+
+    monkeypatch.setenv("TIGERDATA_URL", SECRET_URL)
+
+    class C:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(psycopg, "connect", lambda *a, **k: C())
+    assert ts.diagnose_connection() == "ok"

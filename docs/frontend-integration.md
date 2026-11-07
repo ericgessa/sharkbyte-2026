@@ -67,6 +67,41 @@ A profile row is created automatically on sign-up (database trigger); the app do
 > Email confirmation: if the Supabase project has "Confirm email" on, new users can't sign in until they click
 > the emailed link. For demos the backend dev can turn it off in Dashboard > Authentication.
 
+## Getting your first token (start here if you see 401 / "needs token")
+
+Every `/api/*` call needs the **logged-in user's Supabase access token**. The publishable key is *not* a token
+(sending it as one gives a 401). No account means no token, so:
+
+1. **Get a user account.** Either sign up in the app with `supabase.auth.signUp(...)`, or ask the backend dev to
+   create a test user in the Supabase dashboard (Authentication > Users > Add user, with auto-confirm ticked) and
+   share the email/password privately. If the project has "Confirm email" turned on, a self-signed-up user must
+   click the emailed link before `signInWithPassword` works, and Supabase's built-in email sending is
+   rate-limited, so for hackathon testing a dashboard-created or auto-confirmed user is the reliable route.
+2. **Sign in** (`supabase.auth.signInWithPassword`) and use `data.session.access_token` as the Bearer token.
+
+**Test the API without any app code** (replace the placeholders; `<API>` is `EXPO_PUBLIC_API_URL`):
+
+```bash
+# 1) trade email + password for an access token (the apikey header is the PUBLISHABLE key)
+curl -s -X POST "https://djphcmzoldlmzoosgcej.supabase.co/auth/v1/token?grant_type=password" \
+  -H "apikey: <publishable key>" -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"your-password"}'
+# copy the "access_token" value from the JSON it prints (it lasts about an hour)
+
+# 2) call the backend with it
+curl -s <API>/api/workouts -H "Authorization: Bearer <access_token>"
+# -> [] for a new user. With no or a wrong token you get a 401 that says what is wrong.
+```
+
+Three different things get mixed up, so to be explicit: the **publishable key** identifies the *app* to Supabase
+(public, goes in `.env`); the **access token** identifies the *user* (short-lived, comes from signing in, goes in
+the `Authorization` header); the **secret key** must never leave the backend. If you call Supabase's own database
+API directly instead of this backend, it needs both (`apikey` = publishable key, `Authorization: Bearer` = the
+access token) and only returns the signed-in user's own rows; the backend is the intended route for workouts.
+
+Seeing nothing at all (timeouts, "network request failed") is a different problem from a 401: a 401 means you
+reached the backend. Open `<API>/health` in the phone's browser first.
+
 ## 3. REST calls
 
 Every `/api/*` request needs `Authorization: Bearer <access token>`.

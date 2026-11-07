@@ -46,6 +46,12 @@ In `server/.env` (git-ignored; never commit it, never paste it in chat):
 TIGERDATA_URL=postgres://tsdbadmin:YOUR_PASSWORD@xxxxxxxx.xxxxxx.tsdb.cloud.timescale.com:PORT/tsdb?sslmode=require
 ```
 
+The console often shows the service URL **without the password**. If yours has none, either insert it
+(`postgres://tsdbadmin:PASSWORD@HOST:PORT/tsdb?sslmode=require`; special characters in the password must be
+URL-encoded there) or put it on its own line as `TIGERDATA_PASSWORD=...` (encoded for you; used only if the URL
+has none). `python -m scripts.check_tigerdata` prints the URL's shape (user, host, port, whether a password
+is present; never the password) and diagnoses failures such as a missing or wrong password.
+
 Optional: `TIGERDATA_POOL_MAX=4` (connection pool size). The existing `SUPABASE_*` variables are untouched.
 The URL contains the database password, so it is **backend only** and must never appear in the mobile app. The
 server never logs it or includes it in error messages. If `TIGERDATA_URL` is unset the app runs normally and

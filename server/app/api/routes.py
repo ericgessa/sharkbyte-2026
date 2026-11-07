@@ -28,10 +28,20 @@ def current_user_id(request: Request, authorization: Annotated[str | None, Heade
     """
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token", {"WWW-Authenticate": "Bearer"})
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "missing bearer token: sign in with Supabase and send 'Authorization: Bearer <access_token>' "
+            "(see docs/frontend-integration.md)",
+            {"WWW-Authenticate": "Bearer"},
+        )
     user_id = request.app.state.auth.verify(token.strip())
     if user_id is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or expired token", {"WWW-Authenticate": "Bearer"})
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "invalid or expired token: use the user's Supabase access_token (not the publishable key); "
+            "re-read it with supabase.auth.getSession() because it expires after about an hour",
+            {"WWW-Authenticate": "Bearer"},
+        )
     return user_id
 
 
@@ -57,6 +67,17 @@ def _owned_session(request: Request, session_id: UUID, user_id: str) -> dict[str
     if row is None:  # same answer for "missing" and "someone else's"
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
     return row
+
+
+@router.get("/")
+def root() -> dict[str, str]:
+    """What someone sees when they open the API's address in a browser."""
+    return {
+        "service": "SharkByte API",
+        "health": "/health (no login needed)",
+        "docs": "/docs (interactive REST docs)",
+        "auth": "all /api/* calls need 'Authorization: Bearer <Supabase access_token>'; see docs/frontend-integration.md",
+    }
 
 
 @router.get("/health")
