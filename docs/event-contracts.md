@@ -11,7 +11,8 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 | Method | Path | Notes |
 | --- | --- | --- |
 | GET | `/health` | `{"status":"ok"}` (no auth) |
-| POST | `/api/workouts` | body `{"exercise":"squat"}` → 201 `WorkoutOut` |
+| GET | `/api/exercises` | 200 list of supported exercises (**no login needed**): `slug`, `display_name`, `aliases`, `analysis_supported`, `primary_angles`. Build the exercise picker from this |
+| POST | `/api/workouts` | body `{"exercise":"<any spelling>"}` (optional; defaults to `"squat"`) → 201 `WorkoutOut`. Unknown exercise → 422 listing the supported ones |
 | GET | `/api/workouts?limit=20` | 200 list of your `WorkoutOut`, newest first (`limit` 1-100) |
 | GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
 | GET | `/api/workouts/{session_id}/summary` | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far) |
@@ -19,7 +20,18 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 | GET | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window |
 | POST | `/api/workouts/{session_id}/finish` | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry) |
 
-`WorkoutOut`: `session_id`, `exercise`, `status` (`active`\|`completed`), `started_at`, `ended_at`
+**Exercises.** Supported: `squat`, `push-up`, `pull-up`, `deadlift`, `bench-press`, `lunge`, `plank`. The
+`exercise` value is matched loosely and returned in its canonical form: `"Push Up"`, `"pushup"`, `"PUSH_UP"` and
+`"push-up"` all create a `push-up` workout. A bad value gets a 422 such as
+`Unsupported exercise 'burpee'. Supported: squat, push-up, ...` (with a "Did you mean" for near misses).
+
+**Two levels of support, do not confuse them.** *Logging* works for every exercise: the workout is created,
+streamed to (camera/ESP32 readings are recorded in Tiger Data if configured), finished, shown in history, and the
+user can pause or report pain. *Analysis* (the server counting reps and the rule-based coach giving feedback) exists
+for **squat only**. For every other exercise `analysis_supported` is `false`: the server does **not** count reps
+or coach, `total_reps` stays 0, and the app should say tracking isn't available yet rather than show a rep counter.
+
+`WorkoutOut`: `session_id`, `exercise` (canonical), `analysis_supported`, `status` (`active`\|`completed`), `started_at`, `ended_at`
 (null while active), `total_reps`, `dropped_frames`, `aborted_attempts` (the last two are live
 counters, 0 when the session isn't streaming).
 
@@ -71,6 +83,19 @@ Otherwise the server closes the socket with an application close code:
 | 4401 | first message missing/not `auth`, bad or expired token, or timeout |
 | 4404 | session doesn't exist **or belongs to someone else** |
 | 4409 | session is already completed (or was finished while streaming) |
+| 4410 | a newer connection took this session over (see below). Don't reconnect automatically on this code |
+| 1009 | a message was larger than 16 KB |
+
+**One socket per session.** If the same session connects again (e.g. the phone dropped Wi-Fi and reconnected
+while the server still thinks the old connection is alive), the newest authenticated connection wins and the
+old one is closed with `4410`. Rep counting continues from where it was, and nothing is counted twice.
+
+**Limits.** Messages over 16 KB close the socket (`1009`). Measurements (`pose_update`, `sensor_update`) are limited
+to about 300/s sustained (burst 600); excess ones are dropped and you get one `error` event with code
+`rate_limited` (at most once per 5 s); the socket stays open. `user_signal` messages have their own separate
+limit (5/s, burst 20), so a flood of measurements can never prevent a **pain** report getting through.
+A workout whose app disappears is forgotten by the server after 30 minutes without a socket (its saved reps
+are safe in Supabase and the workout can be resumed by connecting again).
 
 The `session_id` in the URL decides which session is used; it must equal `session_id` in every message body.
 Each rep is saved to Supabase in the background right after `rep_completed` is sent. A database outage
@@ -97,7 +122,11 @@ never stops counting; failed saves are retried when `finish` is called.
 * `timestamp_ms`: integer ≥ 0, client clock (epoch ms or any monotonic origin, but consistent
   within a session). Only differences are used. A decrease drops the frame; a gap over 2 s disarms
   the counter until a standing frame is seen.
-* Knee angles: degrees, 0–180, 180 ≈ straight leg. Either may be `null` but not both.
+* Joint angles: degrees, 0–180, 180 ≈ straight. Fields: `left_knee_angle_deg`, `right_knee_angle_deg`,
+  `left_elbow_angle_deg`, `right_elbow_angle_deg`, `left_hip_angle_deg`, `right_hip_angle_deg`. Send only joints that
+  are visible (omit or `null` the rest); at least one is required. **Only the knee angles are analyzed (squat).**
+  Elbow and hip angles are accepted and recorded in Tiger Data for the other exercises but nothing counts or
+  coaches from them yet.
 * `landmark_confidence`: 0–1. Below 0.6 the frame is ignored (and tracking is reported as lost).
 * Send knee angles only when the relevant landmarks are actually visible; send `null` otherwise.
 
@@ -192,14 +221,15 @@ Clients should treat `issue_code` as an open set and show `message` as-is.
 
 `session_state` — the reply to every `user_signal`:
 `{"type":"session_state","session_id":"UUID","paused":false,"coaching_enabled":true}`
-(`coaching_enabled` is `false` after a pain report). `session_ready` carries the same two fields
+(`coaching_enabled` is `false` after a pain report). `session_ready` also carries `exercise` and
+`analysis_supported` (false = this workout is logged but reps are not counted), and the same two fields
 (`paused`, `coaching_enabled`) so a reconnecting app can restore its UI.
 
 `tracking_status` — sent only on change:
 `{"type":"tracking_status","session_id":"UUID","tracking":"lost"|"recovered", ...}`
 
 `error` — the socket stays open:
-`{"type":"error","code":"invalid_message"|"session_mismatch","detail":"..."}`
+`{"type":"error","code":"invalid_message"|"session_mismatch"|"rate_limited","detail":"..."}`
 
 ### Not yet defined
 

@@ -124,6 +124,22 @@ const workout = await api<{ session_id: string }>('/api/workouts', { method: 'PO
 const summary = await api(`/api/workouts/${workout.session_id}/finish`, { method: 'POST' })   // { status: 'completed', total_reps, ... }
 ```
 
+**Exercise picker.** Don't hardcode exercise names: fetch them (no login needed), so new exercises appear without
+an app release:
+
+```ts
+const exercises = await fetch(`${API}/api/exercises`).then(r => r.json())
+// [{ slug: 'squat', display_name: 'Squat', analysis_supported: true, aliases: [...], primary_angles: [...] }, ...]
+await api('/api/workouts', { method: 'POST', body: JSON.stringify({ exercise: picked.slug }) })
+```
+
+Check `analysis_supported` (also on every workout and in `session_ready`). Today only **squat** is `true`: the server
+counts reps and coaches it. For the other exercises (push-up, pull-up, deadlift, bench press, lunge, plank) the
+workout is logged and the camera/ESP32 data is recorded, but **the server does not count reps or give form feedback**,
+so don't show a live rep counter or promise coaching for them; show something like "Tracking coming soon". Pain/stop
+and pause work for every exercise. Don't try to count reps client-side and send them: the API has no way to accept
+them. A wrong exercise name is a 422 whose message lists the valid ones.
+
 Screens you can build from the other read endpoints (response shapes in [event-contracts.md](event-contracts.md)):
 
 ```ts
@@ -186,7 +202,10 @@ Rules that matter:
   After `pain` the server stops technique coaching for the whole session (`coaching_enabled: false`). Show
   the returned message and don't encourage the user to continue.
 - Reconnect is safe: call `openWorkoutSocket` again with the same session id; the rep count continues.
-- Close codes: `4401` bad/expired token (refresh and retry), `4404` unknown/not yours, `4409` session already finished.
+- Close codes: `4401` bad/expired token (refresh and retry), `4404` unknown/not yours, `4409` session already finished,
+  `4410` replaced by a newer connection (do NOT auto-reconnect on this one, or two copies of the app will fight),
+  `1009` message over 16 KB. Reconnecting after a dropped connection is safe and takes over immediately.
+- Keep camera messages to ~30/s. Over ~300 messages/s the server drops the extras and sends one `rate_limited` error.
 
 ## 5. Testing without the camera
 

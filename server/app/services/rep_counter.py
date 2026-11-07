@@ -94,6 +94,27 @@ class _RepInProgress:
 
 
 @dataclass
+class NoopRepCounter:
+    """Stands in for exercises that have no rep analysis yet (see services/exercises.py).
+
+    It never counts a rep, never reports tracking changes and never raises, so the live pipeline can treat
+    every session the same way while only analyzed exercises produce reps and coaching.
+    """
+
+    rep_count: int = 0
+    phase: SquatPhase = SquatPhase.UNARMED
+    low_confidence: bool = False
+    dropped_frames: int = 0
+    aborted_attempts: int = 0
+
+    def reset_tracking(self) -> None:
+        pass
+
+    def update(self, sample: PoseSample) -> StepResult:
+        return StepResult()
+
+
+@dataclass
 class SquatRepCounter:
     config: SquatConfig = field(default_factory=SquatConfig)
     rep_count: int = 0

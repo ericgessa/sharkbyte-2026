@@ -81,7 +81,7 @@ The migration creates the `sensor_readings` hypertable:
 | `session_id` (uuid) | the Supabase `workout_sessions.id`; **no foreign key** because it is a different database |
 | `source` | `camera`, `flex_sensor` or `imu` |
 | `sensor_id` | hardware id such as `esp32-01` (empty for the camera) |
-| `metric_name` | `left_knee_angle`, `right_knee_angle`, `flex_value`, `imu_pitch`, `imu_roll`, `imu_yaw`, `accel_x/y/z` |
+| `metric_name` | `left/right_knee_angle`, `left/right_elbow_angle`, `left/right_hip_angle`, `flex_value`, `imu_pitch`, `imu_roll`, `imu_yaw`, `accel_x/y/z`. The built-in analytics summarize **knee** angles (squat); elbow/hip readings are stored and queryable through `/readings` and SQL but not summarized yet |
 | `metric_value` | the number |
 | `metadata` (jsonb) | camera rows carry `{"confidence": 0.0-1.0}` so analytics can ignore unreliable frames |
 

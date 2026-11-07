@@ -1,3 +1,5 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# A test that waits forever (e.g. for a WebSocket message that never comes) fails after 30 s instead of hanging the suite.
+timeout = 30

@@ -141,7 +141,8 @@ def test_esp32_sensor_updates_arrive_over_the_existing_socket(client, tiger):
     assert all(str(r.session_id) == sid and r.sensor_id == "esp32-01" for r in tiger.rows)
     assert by_metric["flex_value"][0].source == "flex_sensor" and by_metric["imu_pitch"][0].source == "imu"
     a, b = by_metric["flex_value"]
-    assert (b.time - a.time).total_seconds() == pytest.approx(0.02, abs=1e-6)  # spacing preserved
+    # Spacing is preserved to within datetime's 1 microsecond rounding (a 1e-6 tolerance flaked ~3% of the time).
+    assert (b.time - a.time).total_seconds() == pytest.approx(0.02, abs=1e-4)
 
 
 def test_invalid_sensor_update_gets_an_error_and_the_socket_stays_usable(client, tiger):
