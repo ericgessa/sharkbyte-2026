@@ -8,27 +8,27 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 
 ## REST
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| GET | `/health` | `{"status":"ok"}` (no auth) |
-| GET | `/api/exercises` | 200 list of supported exercises (**no login needed**): `slug`, `display_name`, `aliases`, `analysis_supported`, `primary_angles`. Build the exercise picker from this |
-| POST | `/api/workouts` | body `{"exercise":"<any spelling>"}` (optional; defaults to `"squat"`) → 201 `WorkoutOut`. Unknown exercise → 422 listing the supported ones |
-| GET | `/api/workouts?limit=20` | 200 list of your `WorkoutOut`, newest first (`limit` 1-100) |
-| GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
-| DELETE | `/api/workouts/{session_id}` | **Permanently** deletes the workout from both databases: its reps and coaching events (Supabase) and its sensor readings (Tiger Data). 204 on success; 404 if it is not yours or does not exist (so deleting twice is a 404); 503 if sensor data could not be deleted right now, in which case **nothing** was deleted and it is safe to retry. A socket that is still streaming that workout is closed with `4409`. There is no undo, so the app should confirm first |
-| GET | `/api/workouts/{session_id}/summary` | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far) |
-| GET | `/api/workouts/{session_id}/analytics` | 200 compact analytics: `supabase` (rep stats, coaching events) + `timeseries` (SQL summaries from Tiger Data, per-rep depth/range trends). `timeseries.available` is `false` with a `reason` (`not_configured` / `unavailable`) when Tiger Data is off or down |
-| GET | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window |
-| POST | `/api/workouts/{session_id}/finish` | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry) |
+| Method | Path                                                                             | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------ | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/health`                                                                        | `{"status":"ok"}` (no auth)                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| GET    | `/api/exercises`                                                                 | 200 list of supported exercises (**no login needed**): `slug`, `display_name`, `aliases`, `analysis_supported`, `primary_angles`. Build the exercise picker from this                                                                                                                                                                                                                                                                                                  |
+| POST   | `/api/workouts`                                                                  | body `{"exercise":"<any spelling>"}` (optional; defaults to `"squat"`) → 201 `WorkoutOut`. Unknown exercise → 422 listing the supported ones                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/api/workouts?limit=20`                                                         | 200 list of your `WorkoutOut`, newest first (`limit` 1-100)                                                                                                                                                                                                                                                                                                                                                                                                            |
+| GET    | `/api/workouts/{session_id}`                                                     | 200 `WorkoutOut`, or 404                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| DELETE | `/api/workouts/{session_id}`                                                     | **Permanently** deletes the workout from both databases: its reps and coaching events (Supabase) and its sensor readings (Tiger Data). 204 on success; 404 if it is not yours or does not exist (so deleting twice is a 404); 503 if sensor data could not be deleted right now, in which case **nothing** was deleted and it is safe to retry. A socket that is still streaming that workout is closed with `4409`. There is no undo, so the app should confirm first |
+| GET    | `/api/workouts/{session_id}/summary`                                             | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far)                                                                                                                                                                                                                                                                                                                                                                                      |
+| GET    | `/api/workouts/{session_id}/analytics`                                           | 200 compact analytics: `supabase` (rep stats, coaching events) + `timeseries` (SQL summaries from Tiger Data, per-rep depth/range trends). `timeseries.available` is `false` with a `reason` (`not_configured` / `unavailable`) when Tiger Data is off or down                                                                                                                                                                                                         |
+| GET    | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window                                                                                                                                                                                                                                                            |
+| POST   | `/api/workouts/{session_id}/finish`                                              | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry)                                                                                                                                                                                                                                                                                                                                                                                 |
 
 **Exercises.** Supported: `squat`, `push-up`, `pull-up`, `deadlift`, `bench-press`, `lunge`, `plank`. The
 `exercise` value is matched loosely and returned in its canonical form: `"Push Up"`, `"pushup"`, `"PUSH_UP"` and
 `"push-up"` all create a `push-up` workout. A bad value gets a 422 such as
 `Unsupported exercise 'burpee'. Supported: squat, push-up, ...` (with a "Did you mean" for near misses).
 
-**Two levels of support, do not confuse them.** *Logging* works for every exercise: the workout is created,
+**Two levels of support, do not confuse them.** _Logging_ works for every exercise: the workout is created,
 streamed to (camera/ESP32 readings are recorded in Tiger Data if configured), finished, shown in history, and the
-user can pause or report pain. *Analysis* (the server counting reps and the rule-based coach giving feedback) exists
+user can pause or report pain. _Analysis_ (the server counting reps and the rule-based coach giving feedback) exists
 for **squat only**. For every other exercise `analysis_supported` is `false`: the server does **not** count reps
 or coach, `total_reps` stays 0, and the app should say tracking isn't available yet rather than show a rep counter.
 
@@ -50,8 +50,27 @@ counters, 0 when the session isn't streaming).
     "avg_rep_duration_ms": 1716,
     "max_asymmetry_deg": 2.0
   },
-  "reps": [{ "rep_number": 1, "metrics": { "min_knee_angle_deg": 85.0, "duration_ms": 1716, "...": "..." }, "form_score": null, "created_at": "ISO time" }],
-  "coaching_events": [{ "rep_number": 5, "issue_code": "reduced_depth", "message": "...", "action": "send_feedback", "created_at": "ISO time" }]
+  "reps": [
+    {
+      "rep_number": 1,
+      "metrics": {
+        "min_knee_angle_deg": 85.0,
+        "duration_ms": 1716,
+        "...": "..."
+      },
+      "form_score": null,
+      "created_at": "ISO time"
+    }
+  ],
+  "coaching_events": [
+    {
+      "rep_number": 5,
+      "issue_code": "reduced_depth",
+      "message": "...",
+      "action": "send_feedback",
+      "created_at": "ISO time"
+    }
+  ]
 }
 ```
 
@@ -73,23 +92,27 @@ reconnect and the rep count continues from what was saved.
 
 ## WebSocket `/ws/workouts/{session_id}`
 
-**Handshake.** After connecting, the *first* message must be (within 10 s):
+**Handshake.** After connecting, the _first_ message must be (within 10 s):
 
 ```json
-{ "schema_version": 1, "type": "auth", "access_token": "<Supabase access token>" }
+{
+  "schema_version": 1,
+  "type": "auth",
+  "access_token": "<Supabase access token>"
+}
 ```
 
 The token is sent in a message, not the URL, so it doesn't end up in logs. On success the server replies
 `{"type":"session_ready","session_id":"UUID","rep_count":0}`; start sending `pose_update` after that.
 Otherwise the server closes the socket with an application close code:
 
-| Code | Meaning |
-| --- | --- |
+| Code | Meaning                                                                                                                                                                                                                                                                         |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 4401 | first message missing/not `auth`, bad or expired token, or timeout. Also sent on a healthy connection that has been open for **3 hours**, so the server re-checks the login: refresh the token (`supabase.auth.getSession()`) and reconnect; the workout continues where it was |
-| 4404 | session doesn't exist **or belongs to someone else** |
-| 4409 | session is already completed (or was finished while streaming) |
-| 4410 | a newer connection took this session over (see below). Don't reconnect automatically on this code |
-| 1009 | a message was larger than 16 KB |
+| 4404 | session doesn't exist **or belongs to someone else**                                                                                                                                                                                                                            |
+| 4409 | session is already completed (or was finished while streaming)                                                                                                                                                                                                                  |
+| 4410 | a newer connection took this session over (see below). Don't reconnect automatically on this code                                                                                                                                                                               |
+| 1009 | a message was larger than 16 KB                                                                                                                                                                                                                                                 |
 
 **One socket per session.** If the same session connects again (e.g. the phone dropped Wi-Fi and reconnected
 while the server still thinks the old connection is alive), the newest authenticated connection wins and the
@@ -123,10 +146,11 @@ never stops counting; failed saves are retried when `finish` is called.
 }
 ```
 
-* `sequence`: integer ≥ 0, strictly increasing per session. Repeats and lower values are dropped.
-* `timestamp_ms`: integer ≥ 0, client clock (epoch ms or any monotonic origin, but consistent
+- `sequence`: integer ≥ 0, strictly increasing per session. Repeats and lower values are dropped.
+- `timestamp_ms`: integer ≥ 0, client clock (epoch ms or any monotonic origin, but consistent
   within a session). Only differences are used. A decrease drops the frame; a gap over 2 s disarms
   the counter until a standing frame is seen.
+
 * Joint angles: degrees, 0–180, 180 ≈ straight. Fields: `left_knee_angle_deg`, `right_knee_angle_deg`,
   `left_elbow_angle_deg`, `right_elbow_angle_deg`, `left_hip_angle_deg`, `right_hip_angle_deg`. Send only joints that
   are visible (omit or `null` the rest); at least one is required. **Only the knee angles are analyzed (squat).**
@@ -145,7 +169,12 @@ never stops counting; failed saves are retried when `finish` is called.
   "device_id": "esp32-01",
   "sequence": 56,
   "timestamp_ms": 123456,
-  "data": { "flex_raw": 1780, "imu_pitch_deg": 12.4, "imu_roll_deg": 1.0, "accel_z_g": 0.98 }
+  "data": {
+    "flex_raw": 1780,
+    "imu_pitch_deg": 12.4,
+    "imu_roll_deg": 1.0,
+    "accel_z_g": 0.98
+  }
 }
 ```
 
@@ -162,15 +191,20 @@ Ignored while the workout is paused. Invalid messages get an `error` event like 
 ### Client → server: `user_signal` (the user's own buttons)
 
 ```json
-{ "schema_version": 1, "type": "user_signal", "session_id": "UUID", "signal": "pain" }
+{
+  "schema_version": 1,
+  "type": "user_signal",
+  "session_id": "UUID",
+  "signal": "pain"
+}
 ```
 
 `signal` is one of:
 
-* `pause`: the server ignores `pose_update`s until `resume`. Use for rests or when the user steps away.
-* `resume`: continue. The rep counter forgets any half-finished movement and waits for the user to stand up,
+- `pause`: the server ignores `pose_update`s until `resume`. Use for rests or when the user steps away.
+- `resume`: continue. The rep counter forgets any half-finished movement and waits for the user to stand up,
   so resuming mid-squat never counts a bogus rep.
-* `pain`: the user reports pain or discomfort. The server immediately sends a `coaching_feedback`
+- `pain`: the user reports pain or discomfort. The server immediately sends a `coaching_feedback`
   (`issue_code: "pain_reported"`) telling them to stop and to talk to a qualified health professional, turns
   **technique coaching off for the rest of the session** (counting continues), and saves a `coaching_events`
   row (`action: "recommend_rest"`). The "off" state is remembered across server restarts and reconnects.
