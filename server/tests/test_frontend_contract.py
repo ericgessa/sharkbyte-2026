@@ -59,6 +59,10 @@ def test_every_typescript_message_is_valid_for_the_real_server_models(sample):
     assert len(sample["stream"]) > 400
     for m in sample["stream"]:
         incoming_adapter.validate_python(m)  # extra="forbid": a stray or misspelled field would fail here
+    assert len(sample["pushups"]) > 300
+    for m in sample["pushups"]:
+        parsed = incoming_adapter.validate_python(m)
+        assert parsed.data.left_elbow_angle_deg is not None and parsed.data.left_knee_angle_deg is None
     for m in sample["signals"]:
         parsed = incoming_adapter.validate_python(m)
         assert parsed.type == "user_signal"
@@ -95,6 +99,29 @@ def test_the_typescript_stream_drives_the_real_server_to_five_reps_and_a_coachin
         assert [e["rep_count"] for e in events if e["type"] == "rep_completed"] == [1, 2, 3, 4, 5]
         cue = next(e for e in events if e["type"] == "coaching_feedback")
         assert cue["issue_code"] == "reduced_depth" and cue["source"] == "rules"  # depth dropped on the last two reps
+        end = time.time() + 3
+        while time.time() < end and len(store.reps.get(sid, {})) < 5:
+            time.sleep(0.02)
+        assert client.post(f"/api/workouts/{sid}/finish", headers=ALICE).json()["total_reps"] == 5
+
+
+def test_the_typescript_pushup_stream_drives_the_real_server_to_five_pushups_and_a_cue():
+    store = InMemoryStore()
+    with TestClient(create_app(store=store, auth=FakeAuth(), timeseries=FakeTiger(configured=False))) as client:
+        sid = client.post("/api/workouts", json={"exercise": "push-up"}, headers=ALICE).json()["session_id"]
+        msgs = emit(sid)
+        with client.websocket_connect(f"/ws/workouts/{sid}") as ws:
+            ws.send_text(json.dumps({**msgs["auth"], "access_token": "alice-token"}))
+            ready = ws.receive_json()
+            assert ready["type"] == "session_ready" and ready["analysis_supported"] is True
+            for m in msgs["pushups"]:
+                ws.send_text(json.dumps(m))
+            events = [ws.receive_json() for _ in range(6)]
+        reps = [e for e in events if e["type"] == "rep_completed"]
+        assert [e["rep_count"] for e in reps] == [1, 2, 3, 4, 5], [e["type"] for e in events]
+        assert all(e["metrics"]["joint"] == "elbow" for e in reps)
+        cue = next(e for e in events if e["type"] == "coaching_feedback")
+        assert cue["issue_code"] == "reduced_depth"  # the last two push-ups were shallower
         end = time.time() + 3
         while time.time() < end and len(store.reps.get(sid, {})) < 5:
             time.sleep(0.02)

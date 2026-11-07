@@ -10,7 +10,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { computePoseAngles, type PoseAngles } from '@/pose/angles';
 import { detectOnImageUrl } from '@/pose/mediapipe';
 import { PoseStreamer, type ServerEvent } from '@/pose/protocol';
-import { simulatedSquatFrames } from '@/pose/simulate';
+import { simulatedPushUpFrames, simulatedSquatFrames } from '@/pose/simulate';
 import { createWorkout, finishWorkout, WorkoutSocket, type CreatedWorkout } from '@/pose/workout-client';
 
 const DEFAULT_API = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8000';
@@ -25,6 +25,9 @@ const CLOSE_HINT: Record<number, string> = {
 };
 
 type Phase = 'idle' | 'starting' | 'live' | 'finished';
+type TestState = 'idle' | 'running' | 'pass' | 'fail';
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const fmt = (v: number | null) => (v === null ? '-' : `${v.toFixed(1)}`);
@@ -53,6 +56,9 @@ export function PoseLab() {
   const [simulating, setSimulating] = useState(false);
   const [imageUrl, setImageUrl] = useState('');
   const [imageResult, setImageResult] = useState<string | null>(null);
+  const [pushUpState, setPushUpState] = useState<TestState>('idle');
+  const [pushUpLines, setPushUpLines] = useState<string[]>([]);
+  const pushUpSocket = useRef<WorkoutSocket | null>(null);
 
   const workoutRef = useRef<CreatedWorkout | null>(null);
   const socketRef = useRef<WorkoutSocket | null>(null);
@@ -82,6 +88,7 @@ export function PoseLab() {
     () => () => {
       if (simTimer.current) clearInterval(simTimer.current);
       socketRef.current?.close();
+      pushUpSocket.current?.close();
     },
     [],
   );
@@ -196,6 +203,77 @@ export function PoseLab() {
     }, 34);
   };
 
+  /**
+   * One-tap push-up check against the real backend, with SIMULATED elbow angles (5 push-ups, the last two shallower).
+   * Creates its own push-up workout, so it does not touch the workout in section 2. PASS means: the server accepted
+   * the stream, counted 5 push-ups from the elbow angle, coached the depth drop, and saved 5 reps.
+   */
+  const runPushUpTest = async () => {
+    const accessToken = token.trim();
+    const lines: string[] = [];
+    const add = (line: string) => {
+      lines.push(line);
+      setPushUpLines([...lines]);
+    };
+    const check = (ok: boolean, what: string) => {
+      add(`${ok ? 'ok  ' : 'FAIL'}  ${what}`);
+      return ok;
+    };
+    if (!accessToken) {
+      setPushUpState('fail');
+      add('FAIL  paste a Supabase access token first (section 2)');
+      return;
+    }
+    setPushUpState('running');
+    setPushUpLines([]);
+    const events: ServerEvent[] = [];
+    let allOk = true;
+    try {
+      const w = await createWorkout(apiUrl, accessToken, 'push-up');
+      allOk = check(w.exercise === 'push-up' && w.analysis_supported, `push-up workout created, analysis supported (${w.exercise}, ${w.analysis_supported})`) && allOk;
+
+      let closedWith: number | null = null;
+      const socket = new WorkoutSocket(apiUrl, w.session_id, accessToken, {
+        onEvent: (e) => events.push(e),
+        onClose: (code) => {
+          closedWith = code;
+        },
+      });
+      pushUpSocket.current = socket;
+      socket.connect();
+      for (let i = 0; i < 100 && !socket.isReady && closedWith === null; i++) await sleep(100); // up to 10 s to connect
+      const why = closedWith === null ? '' : ` (closed ${closedWith}: ${CLOSE_HINT[closedWith] ?? 'unknown'})`;
+      if (!check(socket.isReady, `WebSocket connected and authenticated${why}`)) throw new Error('could not connect');
+
+      const streamer = new PoseStreamer(w.session_id);
+      const frames = simulatedPushUpFrames({ depths: [80, 80, 80, 95, 95] });
+      add(`streaming ${frames.length} simulated elbow-angle frames (about ${Math.round((frames.length * 34) / 1000)} s)...`);
+      for (const frame of frames) {
+        const update = streamer.next(frame);
+        if (update) socket.sendPose(update);
+        await sleep(34);
+      }
+      await sleep(1500); // let the last events arrive
+
+      const reps = events.filter((e) => e.type === 'rep_completed');
+      const cue = events.find((e) => e.type === 'coaching_feedback');
+      const depths = reps.map((e) => (e.type === 'rep_completed' ? e.metrics.min_angle_deg : 0));
+      allOk = check(reps.length === 5, `5 push-ups counted (got ${reps.length}; deepest elbow angles: ${depths.join(', ') || 'none'})`) && allOk;
+      allOk = check(reps.every((e) => e.type === 'rep_completed' && e.metrics.joint === 'elbow'), 'every rep was measured on the elbow') && allOk;
+      const cueOk = cue?.type === 'coaching_feedback' && cue.issue_code === 'reduced_depth';
+      allOk = check(cueOk, cue?.type === 'coaching_feedback' ? `coach said: ${cue.message}` : 'coach cue for the shallower last reps') && allOk;
+
+      const done = await finishWorkout(apiUrl, accessToken, w.session_id);
+      allOk = check(done.total_reps === 5, `finished: ${done.total_reps} reps saved`) && allOk;
+    } catch (e) {
+      allOk = check(false, messageOf(e));
+    } finally {
+      pushUpSocket.current?.close();
+      pushUpSocket.current = null;
+    }
+    setPushUpState(allOk ? 'pass' : 'fail');
+  };
+
   const testImage = async () => {
     setImageResult('detecting...');
     try {
@@ -238,6 +316,10 @@ export function PoseLab() {
             <TextInput style={inputStyle} value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} secureTextEntry placeholder="access token" placeholderTextColor={theme.textSecondary} testID="lab-token" />
             <TextInput style={inputStyle} value={exercise} onChangeText={setExercise} autoCapitalize="none" autoCorrect={false} placeholder="exercise (squat)" placeholderTextColor={theme.textSecondary} testID="lab-exercise" />
             <View style={styles.row}>
+              <Btn label="Exercise: squat" onPress={() => setExercise('squat')} disabled={live} testID="lab-pick-squat" />
+              <Btn label="Exercise: push-up" onPress={() => setExercise('push-up')} disabled={live} testID="lab-pick-pushup" />
+            </View>
+            <View style={styles.row}>
               <Btn label={phase === 'starting' ? 'Starting...' : 'Start workout'} onPress={startWorkout} disabled={phase === 'starting' || live} testID="lab-start" />
               <Btn label="Finish" onPress={finish} disabled={!live} testID="lab-finish" />
               <Btn label="Pause" onPress={() => signal('pause')} disabled={!live} />
@@ -261,7 +343,31 @@ export function PoseLab() {
             ))}
           </Section>
 
-          <Section title="3. No camera? Test without one">
+          <Section title="3. Push-up mini test">
+            <ThemedText type="small" themeColor="textSecondary">
+              One tap, no camera: creates a push-up workout, streams 5 simulated push-ups (the last two shallower) to the
+              backend and checks the result. Needs the API URL and token from section 2.
+            </ThemedText>
+            <View style={styles.row}>
+              <Btn label={pushUpState === 'running' ? 'Running...' : 'Run push-up test'} onPress={runPushUpTest} disabled={pushUpState === 'running'} testID="pushup-test-run" />
+            </View>
+            {pushUpState !== 'idle' && (
+              <ThemedText type="smallBold" style={pushUpState === 'fail' ? styles.error : pushUpState === 'pass' ? styles.pass : undefined} testID="pushup-test-result">
+                {pushUpState === 'running' ? 'RUNNING' : pushUpState === 'pass' ? 'PASS' : 'FAIL'}
+              </ThemedText>
+            )}
+            {pushUpLines.map((line, i) => (
+              <ThemedText key={`${i}-${line}`} type="code" themeColor="textSecondary" testID={`pushup-test-line-${i}`}>
+                {line}
+              </ThemedText>
+            ))}
+            <ThemedText type="small" themeColor="textSecondary">
+              With a real camera: pick &quot;Exercise: push-up&quot; above, Start camera, Start workout, then do push-ups
+              side-on to the camera (so one elbow is clearly visible). The rep counter and the coach appear in section 2.
+            </ThemedText>
+          </Section>
+
+          <Section title="4. No camera? Other tests">
             <View style={styles.row}>
               <Btn label={simulating ? 'Simulating...' : 'Simulate 5 squats'} onPress={simulate} disabled={!live || simulating} testID="lab-simulate" />
             </View>
@@ -322,4 +428,5 @@ const styles = StyleSheet.create({
   buttonText: { color: '#ffffff' },
   pressed: { opacity: 0.7 },
   error: { color: '#d93025' },
+  pass: { color: '#188038' },
 });
