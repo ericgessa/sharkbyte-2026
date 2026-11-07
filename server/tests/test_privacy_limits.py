@@ -52,8 +52,11 @@ def stream(client, sid, reps=2, wait_rows=True, tiger=None):
         for m in squat_messages(sid, reps=reps):
             ws.send_text(json.dumps(m))
         [ws.receive_json() for _ in range(reps)]
-        if wait_rows and tiger is not None:
-            assert wait_for(lambda: any(str(r.session_id) == sid for r in tiger.rows))
+    if wait_rows and tiger is not None:
+        # Readings are written in background batches: wait for all of them, not just the first.
+        ingest = client.app.state.ingest
+        assert wait_for(lambda: ingest.stats.buffered == 0 and len(tiger.rows) >= ingest.stats.accepted)
+        assert any(str(r.session_id) == sid for r in tiger.rows)
 
 
 # ---- deleting a workout -----------------------------------------------------
