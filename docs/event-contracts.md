@@ -193,8 +193,10 @@ never stops counting; failed saves are retried when `finish` is called.
 `timestamp_ms` is the **device's own clock** (any origin); the server anchors it to server time on the first
 message from that device. Do not try to match it to the camera's timestamps.
 
-Sensor and camera readings are stored in Tiger Data (see `TIGERDATA_SETUP.md`), not Supabase, and nothing is
-sent back to the client for them. If Tiger Data is not configured the message is still accepted and ignored.
+Sensor and camera readings are stored in Tiger Data (see `TIGERDATA_SETUP.md`), not Supabase. In a **squat**
+workout the server also reads `imu_pitch_deg` / `imu_roll_deg` as the tilt of an IMU on the **upper back** and may
+send a posture `coaching_feedback` (below); nothing else is sent back for sensor data. If Tiger Data is not
+configured the message is still accepted, analyzed for posture, and not stored.
 Ignored while the workout is paused. Invalid messages get an `error` event like any other.
 
 ### Client → server: `user_signal` (the user's own buttons)
@@ -277,6 +279,15 @@ Issue codes: `reduced_depth` (last 2 reps clearly shallower than the median of t
 until 3 reps exist, at least 2 reps between messages, 4 reps before repeating an issue, max 6 per
 session. Messages describe measurements only; they never give medical advice. The thresholds are
 untuned starting values (`CoachConfig` in `server/app/services/coaching.py`).
+**Posture cues** (from `sensor_update`, squat workouts only; `server/app/services/posture.py`, `docs/posture-coach.md`)
+use the same event and the same `source` rules. They are not tied to a `rep_completed`: `rep_count` is the camera's
+current count, or the IMU's own rep number when no camera frames arrive. Issue codes: `forward_lean_increasing`
+(peak upper-back lean at least 8° more than in the first 3 reps), `excessive_forward_lean` (peak lean at least 55°
+from vertical), `lateral_shift` (shoulders tilted at least 5° to the same side at the bottom of 2 reps),
+`rounded_standing_posture` (standing tilt at least 15° from vertical). Each must show in 2 reps in a row; 2 reps
+between posture cues, 4 before the same one repeats, max 6 per session; and no posture cue within 6 s of any other
+cue. Their wording never contains numbers (the angles are not calibrated yet). A pain report stops them too.
+Thresholds are untuned values chosen on SIMULATED data.
 Clients should treat `issue_code` as an open set and show `message` as-is.
 
 `session_state` — the reply to every `user_signal`:

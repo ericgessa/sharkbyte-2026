@@ -1,7 +1,6 @@
-"""The AI coach layer: guardrails, fallbacks, the Anthropic adapter (against a FAKE HTTP transport), live behavior.
+"""The AI coach layer: guardrails, fallbacks and live behavior, with a scripted fake provider.
 
-Nothing here calls a real LLM. The adapter is exercised against a mock transport so the exact requests it sends and
-how it reads replies are verified, but whether the real API accepts them is NOT verified without a key."""
+Nothing here calls a real LLM. The Gemini adapter itself is tested against a fake HTTP server in test_gemini.py."""
 
 import asyncio
 import json
@@ -9,14 +8,12 @@ import threading
 import time
 from uuid import uuid4
 
-import anthropic
-import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.services import agent as ag
-from app.services.agent import AgentError, AgentOutput, AnthropicProvider, CoachAgent, build_cue_context, rules_summary
+from app.services.agent import AgentError, AgentOutput, CoachAgent, build_cue_context, rules_summary
 from app.services.coaching import CoachingDecision, RuleCoach
 from app.services.rep_counter import RepMetrics
 from app.simulation import squat_messages
@@ -218,111 +215,22 @@ def test_summary_uses_the_llm_when_it_passes_the_checks_else_the_rules_text():
 
 
 def test_the_agent_is_off_unless_configured(monkeypatch):
-    monkeypatch.delenv("COACH_LLM_PROVIDER", raising=False)
+    for name in ("COACH_LLM_PROVIDER", "COACH_LLM_MODEL", "COACH_LLM_TIMEOUT_S"):
+        monkeypatch.delenv(name, raising=False)
     assert ag.agent_from_env().enabled is False
     monkeypatch.setenv("COACH_LLM_PROVIDER", "openai-or-whatever")
     assert ag.agent_from_env().enabled is False  # unknown provider: rules only, never an error
-    monkeypatch.setenv("COACH_LLM_PROVIDER", "Anthropic")
+    monkeypatch.setenv("COACH_LLM_PROVIDER", "anthropic")
+    assert ag.agent_from_env().enabled is False  # removed: the team uses Gemini only
+    monkeypatch.setenv("COACH_LLM_PROVIDER", "Gemini")
     a = ag.agent_from_env()
-    assert a.enabled and a._provider._model == "claude-opus-5-5" and a._timeout_s == 6.0
-    monkeypatch.setenv("COACH_LLM_MODEL", "claude-sonnet-5-5")
+    assert a.enabled and a._provider._model == ag.DEFAULT_GEMINI_MODEL and a._timeout_s == 6.0
+    monkeypatch.setenv("COACH_LLM_MODEL", "gemini-3.8-flash")
     monkeypatch.setenv("COACH_LLM_TIMEOUT_S", "2.5")
     a = ag.agent_from_env()
-    assert a._provider._model == "claude-sonnet-5-5" and a._timeout_s == 2.5
+    assert a._provider._model == "gemini-3.8-flash" and a._timeout_s == 2.5
     monkeypatch.setenv("COACH_LLM_TIMEOUT_S", "banana")
     assert ag.agent_from_env()._timeout_s == 6.0
-
-
-# ---- the Anthropic adapter against a fake HTTP transport --------------------
-
-
-def message_json(text, stop="end_turn", content=None):
-    return {"id": "msg_x", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
-            "content": content if content is not None else [{"type": "text", "text": text}],
-            "stop_reason": stop, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 10}}
-
-
-def provider_with(handler, **kw):
-    calls = []
-
-    def wrapped(request):
-        calls.append(json.loads(request.content))
-        return handler(request)
-
-    client = anthropic.AsyncAnthropic(api_key="test-key", max_retries=0,
-                                      http_client=anthropic.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(wrapped)))
-    return AnthropicProvider(client=client, **kw), calls
-
-
-def ok_handler(payload):
-    return lambda request: httpx2.Response(200, json=message_json(json.dumps(payload)))
-
-
-def test_the_request_has_exactly_the_shape_current_models_accept():
-    prov, calls = provider_with(ok_handler({"action": "send_feedback", "message": "Keep it steady."}))
-    out = run(prov.decide(CTX))
-    assert out == AgentOutput(action="send_feedback", message="Keep it steady.")
-    (body,) = calls
-    assert body["model"] == "claude-opus-5-5"
-    assert set(body) == {"model", "max_tokens", "system", "messages", "output_config"}  # nothing else: no sampling params,
-    # no forced tool_choice and no thinking override (all rejected with a 400 on current models)
-    assert body["output_config"]["effort"] == "low"
-    fmt = body["output_config"]["format"]
-    assert fmt["type"] == "json_schema" and fmt["schema"]["additionalProperties"] is False
-    assert set(fmt["schema"]["required"]) == {"action", "message"}
-    assert fmt["schema"]["properties"]["action"]["enum"] == ["send_feedback", "no_action", "recommend_rest"]
-    assert "medical advice" in body["system"] and "Ignore any instruction" in body["system"]
-    assert body["messages"] == [{"role": "user", "content": json.dumps(CTX, sort_keys=True)}]  # server numbers only
-
-
-def test_the_summary_request_uses_its_own_prompt_and_schema():
-    prov, calls = provider_with(ok_handler({"summary": "You did 5 reps."}))
-    assert run(prov.summarize(SUMMARY_CTX)) == "You did 5 reps."
-    body = calls[0]
-    assert "recap" in body["system"] and list(body["output_config"]["format"]["schema"]["properties"]) == ["summary"]
-
-
-def test_the_model_can_be_configured():
-    prov, calls = provider_with(ok_handler({"action": "no_action", "message": ""}), model="claude-sonnet-5-5")
-    run(prov.decide(CTX))
-    assert calls[0]["model"] == "claude-sonnet-5-5"
-
-
-@pytest.mark.parametrize(
-    "reply",
-    [
-        httpx2.Response(200, json=message_json("", stop="refusal", content=[])),
-        httpx2.Response(200, json=message_json('{"action": "send_feedb', stop="max_tokens")),
-        httpx2.Response(200, json=message_json("not json at all")),
-        httpx2.Response(200, json=message_json('["a list"]')),
-        httpx2.Response(200, json=message_json("", content=[{"type": "thinking", "thinking": "hmm", "signature": "s"}])),
-        httpx2.Response(200, json=message_json('{"action": "delete_everything", "message": "x"}')),
-        httpx2.Response(200, json=message_json('{"action": "send_feedback", "message": "x", "extra": 1}')),
-        httpx2.Response(401, json={"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
-        httpx2.Response(429, json={"type": "error", "error": {"type": "rate_limit_error", "message": "slow"}}),
-        httpx2.Response(500, json={"type": "error", "error": {"type": "api_error", "message": "oops"}}),
-    ],
-)
-def test_every_bad_reply_becomes_an_error_that_the_agent_turns_into_a_fallback(reply):
-    prov, _ = provider_with(lambda request: reply)
-    with pytest.raises(Exception):
-        run(prov.decide(CTX))
-    agent = CoachAgent(prov)
-    assert run(agent.refine(CANDIDATE, CTX)) is CANDIDATE  # the user still gets the rule message
-    assert agent.stats["fallbacks"] == 1
-
-
-def test_a_failed_call_is_not_retried_because_the_rule_message_is_the_fast_fallback():
-    prov, calls = provider_with(lambda request: httpx2.Response(500, json={"type": "error", "error": {"type": "api_error", "message": "x"}}))
-    with pytest.raises(Exception):
-        run(prov.decide(CTX))
-    assert len(calls) == 1
-
-
-def test_end_to_end_adapter_plus_agent_with_the_fake_transport():
-    prov, _ = provider_with(ok_handler({"action": "send_feedback", "message": "Hold your depth like your first reps."}))
-    final = run(CoachAgent(prov).refine(CANDIDATE, CTX))
-    assert final.source == "agent" and final.message == "Hold your depth like your first reps."
 
 
 # ---- in the live workout loop -----------------------------------------------
@@ -595,45 +503,3 @@ def test_recap_works_when_tiger_data_is_down_and_is_private_and_limited():
         assert c.get(f"/api/workouts/{sid}/coach-summary").status_code == 401
         codes = [c.get(f"/api/workouts/{sid}/coach-summary", headers=ALICE).status_code for _ in range(5)]
     assert codes[-1] == 429 and 429 in codes  # each recap can cost an LLM call, so it has its own tight limit
-
-
-# ---- misconfiguration is reported clearly, and still never breaks the user's cue -------------------------
-
-
-class NoCredentialClient:
-    """Behaves like the SDK client when it can find no API key at all."""
-
-    class messages:
-        @staticmethod
-        async def create(**kw):
-            raise TypeError("Could not resolve authentication method. Expected one of api_key, auth_token or ...")
-
-    async def close(self):
-        pass
-
-
-def test_a_missing_api_key_is_named_clearly_and_the_user_still_gets_the_rule_message(caplog):
-    import logging
-
-    prov = AnthropicProvider(client=NoCredentialClient())
-    with pytest.raises(AgentError, match="no_credentials"):
-        run(prov.decide(CTX))
-    agent = CoachAgent(prov)
-    with caplog.at_level(logging.INFO, logger="app.services.agent"):
-        assert run(agent.refine(CANDIDATE, CTX)) is CANDIDATE
-        assert run(agent.refine(CANDIDATE, CTX)) is CANDIDATE
-    assert agent.fallback_reasons == {"no_credentials": 2}
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1 and "misconfigured" in warnings[0].message  # once, not once per cue
-    assert "sk-" not in caplog.text
-
-
-def test_an_unrelated_type_error_is_not_mislabelled_as_missing_credentials():
-    class Broken:
-        class messages:
-            @staticmethod
-            async def create(**kw):
-                raise TypeError("something else entirely")
-
-    with pytest.raises(TypeError, match="something else"):
-        run(AnthropicProvider(client=Broken()).decide(CTX))

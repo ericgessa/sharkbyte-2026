@@ -11,7 +11,7 @@ from google import genai
 from google.genai import types as gtypes
 
 from app.services import agent as ag
-from app.services.agent import AgentError, AgentOutput, AnthropicProvider, CoachAgent, GeminiProvider
+from app.services.agent import AgentError, AgentOutput, CoachAgent, GeminiProvider
 from tests.test_agent import CANDIDATE, CTX, SUMMARY_CTX, run
 
 
@@ -150,8 +150,7 @@ def test_the_provider_is_chosen_by_the_environment(monkeypatch):
     assert ag.agent_from_env()._provider._model == "gemini-3.1-flash-lite"
     monkeypatch.delenv("COACH_LLM_MODEL")
     monkeypatch.setenv("COACH_LLM_PROVIDER", "anthropic")
-    b = ag.agent_from_env()
-    assert isinstance(b._provider, AnthropicProvider) and b._provider._model == "claude-opus-5-5"  # each keeps its own default
+    assert ag.agent_from_env().enabled is False  # Gemini is the only provider
     monkeypatch.setenv("COACH_LLM_PROVIDER", "openai")
     assert ag.agent_from_env().enabled is False
 
@@ -173,5 +172,8 @@ def test_the_provider_builds_its_own_client_with_one_attempt_and_the_configured_
     GeminiProvider(timeout_s=3)._get_client()
     opts = captured["http_options"]
     assert opts.retry_options.attempts == 1  # the SDK's own retries (default is several) would delay the rule fallback
-    assert opts.timeout == 6000  # milliseconds: twice the cue timeout, so the agent's own timeout fires first
+    # milliseconds: twice the cue timeout (so the agent's own timeout fires first), but never under 10 s:
+    # Gemini rejects shorter deadlines with 400 INVALID_ARGUMENT, so 3 s -> 10 000, not 6 000.
+    assert opts.timeout == 10_000
+    assert GeminiProvider(timeout_s=6).deadline_ms == 12_000  # the default keeps twice the cue timeout
     assert "api_key" not in captured  # the key is never handled here: the SDK reads it from the environment

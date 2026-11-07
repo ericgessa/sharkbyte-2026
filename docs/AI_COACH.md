@@ -1,12 +1,6 @@
 # The AI coach (LLM layer)
 
-**Status: built and tested offline; NOT yet run against a real model.** No API key existed when this was written, so
-nothing has been sent to a real API. Two providers are implemented: **Gemini** (the team's plan) and Anthropic's Claude.
-What is verified for both: the guardrails, every failure path, the exact HTTP requests each adapter sends and how it reads
-replies (the vendors' real SDKs run against a fake HTTP server), and the behavior inside the live workout loop. What is
-not: that the real APIs accept these requests and that real model output passes the safety checks.
-`python -m scripts.check_coach_llm` is the first live test (2 short requests, small cost); run it as soon as you have a
-key, and treat a failure there as a bug in this layer.
+**Status: Gemini is the only provider (the Anthropic adapter was removed on 2026-11-07).** First live runs, 2026-11-07: `python -m scripts.check_coach_llm` passed (the recap was worded by Gemini; the camera cue came back `no_action`, see *Known issue* below), and `python -m scripts.check_posture_llm` got all four posture cues worded by Gemini, passing every check (`gemini-3.5-flash-lite` 0.7-2.1 s per cue; `gemini-3.8-flash` 3.8-5.3 s, close to the 6 s timeout). Everything else is verified offline: the guardrails, every failure path, the exact HTTP request the adapter sends (the real SDK against a fake HTTP server), and the behavior inside the live workout loop.
 
 It is **off by default**. With it off, the app behaves exactly as before: the rule-based coach gives the feedback.
 
@@ -69,9 +63,8 @@ Restart the server, then run `python -m scripts.check_coach_llm`.
   are set it prefers `GOOGLE_API_KEY`). Default model `gemini-3.5-flash-lite`, which Google's model list shows as stable,
   fast and low cost. Model names change often (older 2.5 models are being retired), so if the live check reports
   `NotFoundError`, set `COACH_LLM_MODEL` to a current id from Google's model list.
-* **Anthropic** (`COACH_LLM_PROVIDER=anthropic`): key `ANTHROPIC_API_KEY`, default `claude-opus-5-5`.
 
-The guardrails and fallbacks are identical for both (they live in `CoachAgent`, not the vendor adapters). Models that
+The guardrails and fallbacks live in `CoachAgent`, not in the vendor adapter. Models that
 think before answering can take a few seconds, which is why a cue can arrive a moment after its `rep_completed`, and why
 there is a timeout with a rule fallback. You can set `COACH_LLM_MODEL` to a cheaper or faster model if latency or cost
 matters (your call).
@@ -80,9 +73,6 @@ The recap endpoint is `GET /api/workouts/{id}/coach-summary` (see `event-contrac
 
 ## Not enabled on purpose
 
-* **Vendor-side refusal fallbacks** (Anthropic's server-side `fallbacks` option, which re-runs a declined request on
-  another model) are not used. This layer already has its own fallback for a refusal: the deterministic rule message, with no second
-  model call and no surprise cost. Tell me if you want the extra model hop as well.
 * **Gemini's newer "Interactions" API** is not used. The adapter uses the SDK's established `generate_content` call (still
   shipped in `google-genai`), because its request shape could be verified offline. Google's current docs lead with the
   Interactions API; switching later means changing only `GeminiProvider._ask`.
@@ -104,17 +94,25 @@ fallback, the timeout and the background delivery are in `CoachAgent` and apply 
   `agent.stats` / `fallback_reasons` show how often.
 * Cost scales with workouts, not frames: a few short requests per workout plus occasional recaps.
 
-## Two coach modules (as of the merge with `main`)
+## Posture cues (upper-back IMU)
 
-There are currently two separate, independent LLM coach implementations in `server/app/services/`:
+Posture cues now go through this same layer: no second LLM client, no second set of rules.
 
-- `agent.py` (this document): rewords the **rule coach's rep cues** and writes **workout recaps**. It is wired into
-  the live WebSocket and REST endpoints, off by default, with Anthropic and Gemini providers.
-- `ai_coach.py` + `posture.py` (added on `main`, see their docstrings): turn **sensor-based posture decisions** into a
-  short Gemini-worded warning. Standalone: **nothing in the app imports them yet**, so they are not part of the live
-  workout flow. They are tested with a fake model (`tests/test_ai_coach.py`, `tests/test_posture.py`) and never run
-  against a real key.
+* `services/posture.py` decides (deterministic): it finds squats in the IMU's tilt signal and flags
+  `forward_lean_increasing`, `excessive_forward_lean`, `lateral_shift` or `rounded_standing_posture`, with the
+  measured numbers as `evidence`.
+* `websocket.py` (`_coach_posture`) feeds each `sensor_update` of a squat workout to a per-device `PostureCoach`, then
+  hands a decision to the same `_spawn_agent_delivery` / `_deliver_coaching` path as camera cues.
+* `build_posture_context` is what the model sees. Two extra rules apply only to posture cues, through the context:
+  `numbers_allowed: false` (the tilt angles are uncalibrated, so a reply with any number falls back) and `side` (a
+  lateral shift must name the measured side, and only that side). Spine words are banned for every cue.
+* No posture cue within 6 s of any other cue (camera cues are never held back), and a pain report stops them.
+* Details, thresholds and the simulated test data: `docs/posture-coach.md`.
 
-They do not share code. When the posture warnings are wired in, route them through the same guardrails as `agent.py`
-(length, no medical advice, numbers must come from the measured context, pain stops coaching) rather than keeping two
-sets of rules.
+## Known issue: the camera cue lists itself as already given
+
+`RuleCoach.observe` adds the cue to `history` before `build_cue_context` runs, so the model sees the cue it is asked to
+word under `feedback_already_given` and may treat it as a repeat (`no_action`). The live check's camera cue came back
+`no_action`, which fits this (not proven). The posture path had the same problem and now excludes the cue being worded (live: 3 of 4 posture cues were
+`no_action` before the fix, 0 of 4 after). The same fix for camera cues is a one-line change in `build_cue_context`
+(skip the last history entry when it is the candidate's); not made yet, because it changes the rule coach's path.

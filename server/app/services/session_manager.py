@@ -23,6 +23,7 @@ from app.services import persistence
 from app.services.coaching import RuleCoach
 from app.services.ingest import ClockAnchors
 from app.services.persistence import Write
+from app.services.posture import PostureCoach
 from app.services.exercises import DEFAULT_EXERCISE, Exercise, find
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,9 @@ class LiveSession:
     counter: Any  # SquatRepCounter / PushUpRepCounter, or NoopRepCounter for exercises without analysis
     exercise: Exercise | None = None
     coach: RuleCoach = field(default_factory=RuleCoach)
+    # Upper-back IMU posture coaches, one per ESP32 device_id (created on the first sensor_update; see websocket.py).
+    posture: dict[str, PostureCoach] = field(default_factory=dict)
+    last_cue_at: float | None = None  # monotonic time of the last coaching cue sent (any source), to space them out
     clock: ClockAnchors = field(default_factory=ClockAnchors)  # device/camera clocks -> server time
     # Writes that failed and must be retried when finishing (see services/persistence.py).
     pending_writes: list[Write] = field(default_factory=list)

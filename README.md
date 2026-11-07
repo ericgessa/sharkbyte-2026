@@ -8,8 +8,8 @@ An AI gym coach built from three layers:
   measures each one: depth, tempo, and left/right asymmetry. A rule-based coach gives feedback.
 - **AI layer (LLM, optional):** words that feedback in natural language and writes workout recaps.
   The rep count and the decision to coach stay deterministic and never depend on the model. The
-  providers implemented are **Gemini** (the team's plan) and Anthropic's Claude, chosen with one setting
-  (see [`docs/AI_COACH.md`](docs/AI_COACH.md)). Neither has been run against a real key yet.
+  provider is **Gemini**, switched on with one setting (see [`docs/AI_COACH.md`](docs/AI_COACH.md)). The same
+  layer words posture cues from the ESP32 on the upper back ([`docs/posture-coach.md`](docs/posture-coach.md)).
 
 Sensor input from an ESP32 is accepted by the backend (`sensor_update`) and stored; the firmware and
 sensor calibration are not built yet.
@@ -136,7 +136,7 @@ npx tsc --noEmit
   never ship it in the mobile app. Setup: [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md).
 - **Tiger Data** (`TIGERDATA_URL`, `TIGERDATA_PASSWORD`): optional; without it workouts work and sensor readings are
   simply not stored. Setup: [`TIGERDATA_SETUP.md`](TIGERDATA_SETUP.md).
-- **LLM coach** (`COACH_LLM_PROVIDER=gemini` + `GEMINI_API_KEY`, or `anthropic` + `ANTHROPIC_API_KEY`): optional and off by
+- **LLM coach** (`COACH_LLM_PROVIDER=gemini` + `GEMINI_API_KEY`): optional and off by
   default. Backend only, never in the mobile app. Details: [`docs/AI_COACH.md`](docs/AI_COACH.md).
 
 Run the tests:
