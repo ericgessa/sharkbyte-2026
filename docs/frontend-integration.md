@@ -285,6 +285,21 @@ untuned guesses.
   content). So both the lab and the API need `https://` tunnel addresses (and `wss://` is derived from the API URL).
   Not tried on a phone yet.
 
+**Building phone (native) tracking? Where to plug in without conflicts.** The web lab is built so a native camera
+can replace two files and nothing else:
+
+- `mobile/src/components/pose-camera.tsx` is the native stand-in (it only prints "web only"). A native camera screen
+  replaces its body and keeps the `PoseCameraProps` / `PoseFrameInfo` shape from `pose-camera-types.ts`, so
+  `pose-lab.tsx` works unchanged.
+- `mobile/src/pose/mediapipe.ts` is the native stub (`POSE_TRACKING_AVAILABLE = false`). A native detector implements
+  the `PoseDetector` interface in `mobile/src/pose/types.ts`.
+- Reuse, do not rewrite: `angles.ts` (landmarks to the joint angles the server wants), `protocol.ts` (`PoseStreamer`
+  numbers and rate-limits frames; the server needs strictly increasing `sequence` and `timestamp_ms`),
+  `workout-client.ts` (REST plus the authenticated socket), `simulate.ts` and `npm run test:pose`.
+- Files most likely to collide in a merge: `mobile/package.json` and `package-lock.json` (this branch adds
+  `@mediapipe/tasks-vision`, pinned), `src/components/app-tabs.web.tsx` (a hidden `/pose` tab trigger), and the route
+  `src/app/pose.tsx`. Use different file names for new screens, and run `git fetch` and merge `main` before pushing.
+
 Verified so far: model loads in a browser (GPU delegate), real inference on a still image returns angles, and the
 simulated stream through the lab reaches the live backend (5 reps counted, the depth cue comes back). **Not
 verified:** a live camera with a person moving, accuracy of the angles against real squats, mobile devices,
