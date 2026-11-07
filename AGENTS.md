@@ -43,11 +43,13 @@ server/
   app/simulation.py                 simulated pose data for tests/demo
   app/services/sensor_fusion.py     planned
   app/services/coaching.py          planned
-  app/services/database.py          planned
+  app/services/database.py          Supabase client + session queries (not yet used by the API routes)
+  scripts/                          check_db.py, db_example.py
   tests/
   .env.example
 firmware/esp32/             planned
-supabase/migrations/        written, not yet applied
+supabase/                   config.toml + migrations (see SUPABASE_SETUP.md)
+SUPABASE_SETUP.md
 docs/event-contracts.md
 AGENTS.md
 CLAUDE.md
