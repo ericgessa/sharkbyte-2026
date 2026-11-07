@@ -3,3 +3,5 @@ uvicorn[standard]>=0.30
 pydantic>=2.7
 supabase>=2.34,<3
 python-dotenv>=1.0
+psycopg[binary]>=3.2
+psycopg-pool>=3.2

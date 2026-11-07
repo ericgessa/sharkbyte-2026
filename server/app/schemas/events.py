@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from app.schemas.sensors import SensorUpdate
+
 SCHEMA_VERSION = 1
 
 
@@ -56,9 +58,8 @@ class UserSignal(_Strict):
     signal: Literal["pain", "pause", "resume"]
 
 
-# Phase 4: add SensorUpdate to this union.
-IncomingEvent = Annotated[Union[PoseUpdate, UserSignal], Field(discriminator="type")]
-incoming_adapter: TypeAdapter[PoseUpdate | UserSignal] = TypeAdapter(IncomingEvent)
+IncomingEvent = Annotated[Union[PoseUpdate, SensorUpdate, UserSignal], Field(discriminator="type")]
+incoming_adapter: TypeAdapter[PoseUpdate | SensorUpdate | UserSignal] = TypeAdapter(IncomingEvent)
 
 
 # ------------------------------------------------------------------ outgoing

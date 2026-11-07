@@ -83,3 +83,31 @@ BOB = {"Authorization": "Bearer bob-token"}
 
 def auth_message(token: str = "alice-token") -> dict:
     return {"schema_version": 1, "type": "auth", "access_token": token}
+
+
+class FakeTiger:
+    """Stands in for TigerStore: records inserts, serves canned query results, can simulate an outage."""
+
+    def __init__(self, configured: bool = True) -> None:
+        self.configured = configured
+        self.fail = False
+        self.rows: list = []  # SensorReading objects that were "inserted"
+        self.batches: list[int] = []
+        self.queries: list[tuple[str, object]] = []
+        self.result: object = []  # list of dict rows, or a callable(sql, params) -> list
+
+    def insert_readings(self, readings) -> int:
+        if self.fail:
+            raise RuntimeError("simulated Tiger Data outage")
+        self.rows.extend(readings)
+        self.batches.append(len(readings))
+        return len(readings)
+
+    def query(self, sql, params=None, timeout_ms=10_000):
+        if self.fail:
+            raise RuntimeError("simulated Tiger Data outage")
+        self.queries.append((sql, params))
+        return self.result(sql, params) if callable(self.result) else list(self.result)  # type: ignore[arg-type]
+
+    def close(self) -> None:
+        pass

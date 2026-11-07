@@ -71,6 +71,9 @@ class RepMetrics:
     ascent_ms: int
     duration_ms: int
     max_asymmetry_deg: float | None  # None if both knees were never visible together
+    # The pose stream's own clock (ms). Lets time-series analytics slice a session into reps.
+    start_ts_ms: int = 0
+    end_ts_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -238,6 +241,8 @@ class SquatRepCounter:
             ascent_ms=ts - rep.ascent_start_ts,
             duration_ms=duration,
             max_asymmetry_deg=None if rep.max_asymmetry is None else round(rep.max_asymmetry, 1),
+            start_ts_ms=rep.start_ts,
+            end_ts_ms=ts,
         )
         logger.info("rep %d completed: %s", self.rep_count, metrics)
         return metrics

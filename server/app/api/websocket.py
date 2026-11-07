@@ -19,8 +19,10 @@ from app.schemas.events import (
     UserSignal,
     incoming_adapter,
 )
+from app.schemas.sensors import SensorUpdate
 from app.services.coaching import ACTION_RECOMMEND_REST, PAIN_ISSUE_CODE, PAIN_MESSAGE
 from app.services import persistence
+from app.services.ingest import pose_readings, sensor_readings
 from app.services.persistence import Write
 from app.services.rep_counter import PoseSample, RepMetrics
 from app.services.session_manager import LiveSession
@@ -48,6 +50,24 @@ def _metrics_dict(r: RepMetrics) -> dict:
         "duration_ms": r.duration_ms,
         "max_asymmetry_deg": r.max_asymmetry_deg,
     }
+
+
+def _stored_metrics(live: LiveSession, r: RepMetrics) -> dict:
+    """What is saved in Supabase for a rep: the metrics plus when the rep happened (server time),
+    so time-series analytics can slice a session into reps. Not sent to the client."""
+    return {
+        **_metrics_dict(r),
+        "started_at": live.clock.to_datetime("camera", r.start_ts_ms).isoformat(),
+        "ended_at": live.clock.to_datetime("camera", r.end_ts_ms).isoformat(),
+    }
+
+
+def _record(ws: WebSocket, readings_fn) -> None:
+    """Hand sensor readings to the ingestor. A bug or outage here must never touch the live workout."""
+    try:
+        ws.app.state.ingest.add(readings_fn())
+    except Exception:
+        logger.exception("sensor ingestion failed; live workout unaffected")
 
 
 SAVE_TIMEOUT_S = 15.0
@@ -179,7 +199,20 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
             if live.paused:
                 continue  # the user paused: ignore measurements until they resume
 
+            if isinstance(event, SensorUpdate):  # ESP32 data relayed over this same socket
+                _record(
+                    ws,
+                    lambda: sensor_readings(
+                        session_id,
+                        live.clock.to_datetime(f"device:{event.device_id}", event.timestamp_ms),
+                        event.device_id,
+                        event.data,
+                    ),
+                )
+                continue
+
             d = event.data
+            _record(ws, lambda: pose_readings(session_id, live.clock.to_datetime("camera", event.timestamp_ms), d))
             result = counter.update(
                 PoseSample(
                     sequence=event.sequence,
@@ -205,7 +238,7 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                     ws,
                     RepCompleted(session_id=session_id, rep_count=r.rep_number, metrics=RepMetricsOut(**_metrics_dict(r))),
                 )
-                _persist(ws, live, (persistence.REP, (session_id, r.rep_number, _metrics_dict(r))))
+                _persist(ws, live, (persistence.REP, (session_id, r.rep_number, _stored_metrics(live, r))))
 
                 decision = live.coach.observe(r)
                 if decision is not None:

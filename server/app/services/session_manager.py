@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 from app.services.coaching import RuleCoach
+from app.services.ingest import ClockAnchors
 from app.services.persistence import Write
 from app.services.rep_counter import SquatRepCounter
 
@@ -23,6 +24,7 @@ class LiveSession:
     user_id: str
     counter: SquatRepCounter
     coach: RuleCoach = field(default_factory=RuleCoach)
+    clock: ClockAnchors = field(default_factory=ClockAnchors)  # device/camera clocks -> server time
     # Writes that failed and must be retried when finishing (see services/persistence.py).
     pending_writes: list[Write] = field(default_factory=list)
     # Background saves in flight; finishing waits for these so no rep is missed.
