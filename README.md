@@ -11,8 +11,9 @@ An AI gym coach built from three layers:
   providers implemented are **Gemini** (the team's plan) and Anthropic's Claude, chosen with one setting
   (see [`docs/AI_COACH.md`](docs/AI_COACH.md)). Neither has been run against a real key yet.
 
-Sensor input from an ESP32 is accepted by the backend (`sensor_update`) and stored; the firmware and
-sensor calibration are not built yet.
+Sensor input from an ESP32 is accepted by the backend (`sensor_update`) and stored. The wearable's
+bench-test firmware and its calibration live in [`hardware/`](hardware/); it doesn't send data to the
+server yet (see [`hardware/README.md`](hardware/README.md)).
 
 > **Status:** the backend is built and tested against **simulated** data. Nothing has been validated with a
 > real camera or wearable yet, MediaPipe pose tracking exists **for the web only** (a developer page,
@@ -27,6 +28,7 @@ sensor calibration are not built yet.
 | [`server/`](server/) | FastAPI backend: REST + WebSocket API, rep counter, rule-based coach, optional LLM layer. |
 | [`supabase/`](supabase/) | Supabase config and SQL migrations (users, workouts, reps, coaching events, security rules). |
 | [`tigerdata/`](tigerdata/) | Tiger Data (TimescaleDB) migration for the high-frequency sensor readings. |
+| [`hardware/`](hardware/) | ESP32 spine wearable: BNO085 + 3x MPU-6050 firmware, bench tests, wiring. |
 | [`docs/`](docs/) | Message contracts, frontend guide, AI coach, deployment, how to add an exercise. |
 
 Two databases with separate jobs: **Supabase** holds accounts and the product data; **Tiger Data** holds the

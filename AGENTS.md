@@ -62,7 +62,7 @@ server/
   scripts/                          check_db.py, db_example.py
   tests/
   .env.example
-firmware/esp32/             planned
+hardware/                   ESP32 wearable (Arduino C++): firmware/spine_test, tests/, wiring + server mapping in README.md
 supabase/                   config.toml + migrations (see SUPABASE_SETUP.md)
 tigerdata/migrations/       sensor_readings hypertable (see TIGERDATA_SETUP.md); Tiger Data is optional at runtime
 SUPABASE_SETUP.md
