@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 from uuid import UUID
@@ -116,7 +117,7 @@ def get_workout_session(
     db = client or get_client()
     rows = _rows(
         db.table("workout_sessions")
-        .select("*")
+        .select("*, exercises(name)")
         .eq("id", str(session_id))
         .eq("user_id", str(user_id))
         .limit(1)
@@ -138,3 +139,124 @@ def list_workout_sessions(
         .limit(limit)
         .execute()
     )
+
+
+def save_repetition(
+    session_id: UUID | str,
+    rep_number: int,
+    metrics: dict[str, Any],
+    form_score: float | None = None,
+    client: Client | None = None,
+) -> None:
+    """Idempotently store one rep (upsert on session_id + rep_number).
+
+    The caller must already have verified that the session belongs to the
+    authenticated user; this function does not re-check ownership.
+    """
+    db = client or get_client()
+    db.table("repetitions").upsert(
+        {
+            "session_id": str(session_id),
+            "rep_number": rep_number,
+            "metrics": metrics,
+            "form_score": form_score,
+        },
+        on_conflict="session_id,rep_number",
+    ).execute()
+
+
+def save_coaching_event(
+    session_id: UUID | str,
+    event_id: UUID | str,
+    rep_number: int | None,
+    issue_code: str | None,
+    message: str,
+    action: str | None,
+    client: Client | None = None,
+) -> None:
+    """Idempotently store one coaching event (upsert on id; the caller supplies the id)."""
+    db = client or get_client()
+    db.table("coaching_events").upsert(
+        {
+            "id": str(event_id),
+            "session_id": str(session_id),
+            "rep_number": rep_number,
+            "issue_code": issue_code,
+            "message": message,
+            "action": action,
+        },
+        on_conflict="id",
+    ).execute()
+
+
+def count_repetitions(session_id: UUID | str, client: Client | None = None) -> int:
+    db = client or get_client()
+    res = db.table("repetitions").select("id", count="exact").eq("session_id", str(session_id)).limit(0).execute()
+    return int(res.count or 0)
+
+
+def finish_workout_session(
+    session: dict[str, Any], total_reps: int, client: Client | None = None
+) -> dict[str, Any] | None:
+    """Mark an *active* session completed. ``session`` is the ownership-checked row.
+
+    ``ended_at`` is never earlier than ``started_at`` even if this machine's clock
+    is behind the database's (the table has a CHECK for that).
+    """
+    db = client or get_client()
+    started = datetime.fromisoformat(str(session["started_at"]).replace("Z", "+00:00"))
+    ended = max(datetime.now(timezone.utc), started)
+    rows = _rows(
+        db.table("workout_sessions")
+        .update({"status": "completed", "ended_at": ended.isoformat(), "total_reps": total_reps})
+        .eq("id", str(session["id"]))
+        .eq("user_id", str(session["user_id"]))
+        .eq("status", "active")
+        .execute()
+    )
+    return rows[0] if rows else None
+
+
+class SupabaseStore:
+    """What the API layer talks to. Tests substitute an in-memory fake with the same methods.
+
+    The client is created lazily so importing/creating the app needs no credentials.
+    """
+
+    def __init__(self, client: Client | None = None) -> None:
+        self._client = client
+
+    @property
+    def client(self) -> Client:
+        return self._client or get_client()
+
+    def create_session(self, user_id: str, exercise: str) -> dict[str, Any]:
+        row = create_workout_session(user_id, exercise, self.client)
+        row["exercises"] = {"name": exercise}
+        return row
+
+    def get_session(self, session_id: UUID, user_id: str) -> dict[str, Any] | None:
+        return get_workout_session(session_id, user_id, self.client)
+
+    def save_repetition(self, session_id: UUID, rep_number: int, metrics: dict[str, Any]) -> None:
+        save_repetition(session_id, rep_number, metrics, client=self.client)
+
+    def save_coaching_event(
+        self,
+        session_id: UUID,
+        event_id: UUID,
+        rep_number: int | None,
+        issue_code: str | None,
+        message: str,
+        action: str | None,
+    ) -> None:
+        save_coaching_event(session_id, event_id, rep_number, issue_code, message, action, client=self.client)
+
+    def count_repetitions(self, session_id: UUID) -> int:
+        return count_repetitions(session_id, self.client)
+
+    def finish_session(self, session: dict[str, Any], total_reps: int) -> dict[str, Any] | None:
+        row = finish_workout_session(session, total_reps, self.client)
+        if row is not None:
+            row["exercises"] = session.get("exercises")
+        return row

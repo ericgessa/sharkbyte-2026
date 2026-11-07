@@ -41,8 +41,10 @@ server/
   app/services/session_manager.py   in-memory for now
   app/services/rep_counter.py
   app/simulation.py                 simulated pose data for tests/demo
+  app/services/coaching.py          rule-based coach (LLM coach would sit on top, using it as fallback)
+  app/services/auth.py              Supabase token verification
+  app/services/persistence.py       retryable database writes
   app/services/sensor_fusion.py     planned
-  app/services/coaching.py          planned
   app/services/database.py          Supabase client + session queries (not yet used by the API routes)
   scripts/                          check_db.py, db_example.py
   tests/

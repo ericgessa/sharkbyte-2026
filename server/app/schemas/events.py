@@ -39,11 +39,26 @@ class PoseUpdate(_Strict):
     data: PoseData
 
 
+class AuthMessage(_Strict):
+    """Must be the first message on a WebSocket. Keeps the token out of the URL."""
+
+    schema_version: Literal[1]
+    type: Literal["auth"]
+    access_token: str = Field(min_length=1, max_length=8192)
+
+
 # Phase 4: add SensorUpdate and turn this into a union discriminated on "type".
 IncomingEvent = PoseUpdate
 
 
 # ------------------------------------------------------------------ outgoing
+
+
+class SessionReady(_Strict):
+    schema_version: Literal[1] = SCHEMA_VERSION
+    type: Literal["session_ready"] = "session_ready"
+    session_id: UUID
+    rep_count: int
 
 
 class RepMetricsOut(_Strict):
@@ -60,6 +75,16 @@ class RepCompleted(_Strict):
     session_id: UUID
     rep_count: int
     metrics: RepMetricsOut
+
+
+class CoachingFeedback(_Strict):
+    schema_version: Literal[1] = SCHEMA_VERSION
+    type: Literal["coaching_feedback"] = "coaching_feedback"
+    session_id: UUID
+    rep_count: int
+    issue_code: str
+    message: str
+    source: Literal["rules", "agent"] = "rules"
 
 
 class TrackingStatus(_Strict):
@@ -88,6 +113,7 @@ class WorkoutOut(_Strict):
     exercise: str
     status: Literal["active", "completed"]
     started_at: datetime
+    ended_at: datetime | None = None
     total_reps: int
-    dropped_frames: int
-    aborted_attempts: int
+    dropped_frames: int = 0  # live counters; 0 when the session is not streaming
+    aborted_attempts: int = 0
