@@ -56,35 +56,56 @@ Serial Monitor at 115200 baud.
    - `upper`: BNO085 minus MPU A
    - `mid`: MPU A minus MPU B
    - `lumbar`: MPU B minus MPU C (the most important one for form)
-3. Send `d` for the per-sensor debug view (each sensor's own tilt, plus BNO data rate).
+3. Serial commands: `c` recalibrate, `n` normal view, `d` per-sensor debug view (each sensor's own
+   tilt, plus BNO data rate), `s` stream mode (one JSON line per sample, for the server).
 
 A flat-back hip hinge raises `torso` while the sections stay near 0.
 Rounding the lower back raises `lumbar`.
 
-## How this connects to the server
+## Sending data to the server
 
-The backend already accepts wearable data as `sensor_update` messages on the workout WebSocket
-([`docs/event-contracts.md`](../docs/event-contracts.md), [`server/app/schemas/sensors.py`](../server/app/schemas/sensors.py)).
-The posture coach ([`docs/ai-coach.md`](../docs/ai-coach.md)) was built on simulated data and assumes
-**one IMU flat on the upper back, between the shoulder blades**. That is the BNO085's position here.
+The wearable connects over **USB**. The browser page that runs the workout reads it and forwards each
+sample over the workout's WebSocket, which is the only connection the server allows per workout.
+
+1. Flash `firmware/spine_test` and plug the XIAO into the laptop running the web app.
+2. **Close the Arduino Serial Monitor.** Only one program can hold the port.
+3. Open the app's `/pose` page in desktop **Chrome or Edge**, click **Connect wearable** and pick the
+   XIAO's port. The page switches the firmware to stream mode (`s`) and shows calibration prompts.
+4. Calibrate: stand still, then bend forward and hold, as above. **Recalibrate** on the page sends `c`.
+5. Start a workout on the same page. While it runs, samples go to the server at ~20 per second.
+
+In stream mode each line looks like this (a field is left out if its sensor is missing):
+
+```
+{"t":123456,"imu_pitch_deg":30.10,"imu_roll_deg":-2.00,"spine_upper_deg":4.20,"spine_mid_deg":-1.50,"spine_lumbar_deg":18.00}
+```
+
+The page wraps it in a `sensor_update`
+([`docs/event-contracts.md`](../docs/event-contracts.md), [`server/app/schemas/sensors.py`](../server/app/schemas/sensors.py)):
 
 | `spine_test` value | `sensor_update` field | Notes |
 |---|---|---|
-| BNO085 forward angle (`torso`) | `imu_pitch_deg` | Both use + = leaning forward. The server's field is described as tilt from vertical, while `torso` is measured from the calibrated neutral posture. |
-| BNO085 side angle (debug view `BNO side`) | `imu_roll_deg` | The server expects + = toward the user's right. The sketch's sign hasn't been checked yet; flip it if it reads the other way. |
-| `upper` / `mid` / `lumbar` | none yet | The contract has no per-section fields. Adding them means changing `SensorData` and `SENSOR_FIELDS` in `sensors.py`. |
-| none | `flex_raw` | No flex sensor in the parts list. |
-| none | `imu_yaw_deg` | Not used; yaw drifts without a magnetometer reference. |
+| `torso` (BNO085 forward tilt) | `imu_pitch_deg` | + = leaning forward, relative to the calibrated neutral posture |
+| BNO085 side tilt | `imu_roll_deg` | The server expects + = toward the wearer's right. **Not checked yet:** lean right in the debug view (`d`); if `BNO side` goes negative, set `ROLL_SIGN` to `-1` in the sketch |
+| `upper` | `spine_upper_deg` | BNO085 minus MPU A |
+| `mid` | `spine_mid_deg` | MPU A minus MPU B |
+| `lumbar` | `spine_lumbar_deg` | MPU B minus MPU C |
+| `t` | `timestamp_ms` | ESP32 uptime in ms; the server anchors it to its own clock |
+
+The project has no flex sensors, and yaw isn't sent because it drifts.
+
+The server stores all five values in Tiger Data. The posture coach ([`docs/ai-coach.md`](../docs/ai-coach.md))
+still only looks at `imu_pitch_deg` / `imu_roll_deg` and isn't wired into the live workout yet. Using the
+section angles, especially `lumbar`, for coaching is the next step.
 
 Not built yet:
 
-- **Transport.** The sketch only prints to Serial. Nothing sends `sensor_update` messages to the
-  server yet (no Wi-Fi or BLE code).
+- **Wireless.** USB only for now; BLE could reuse the same JSON lines.
 - **Haptics.** The DRV2605L is in the parts list but no sketch drives it.
 
 Answers to the open hardware questions in `docs/ai-coach.md`: the BNO085 sits between the shoulder
 blades; axis direction doesn't matter, because calibration learns each sensor's forward direction;
-there's no flex sensor; sensors are sampled at 100 Hz on the board (send rate not decided).
+there's no flex sensor; sensors are sampled at 100 Hz on the board and sent at 20 Hz.
 
 ## Troubleshooting
 

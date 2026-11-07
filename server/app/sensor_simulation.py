@@ -11,8 +11,10 @@ Mounting model (an ASSUMPTION until the hardware team confirms it):
   * ``accel_*_g``: device frame, z up along the spine, x out of the chest, y toward the user's left.
     At rest the reading is about (-sin pitch, sin roll * cos pitch, cos roll * cos pitch) g; squatting adds a
     small vertical acceleration.
-  * No flex sensor and no yaw: where a flex strip goes is undecided, and yaw drifts without a magnetometer.
-    Add them here once the hardware is known.
+  * No yaw (it drifts without a magnetometer). The project has no flex sensors.
+  * The real wearable (hardware/README.md) puts a BNO085 at this spot, which confirms the placement, and adds
+    three MPU-6050s lower down that send ``spine_upper_deg`` / ``spine_mid_deg`` / ``spine_lumbar_deg``.
+    Those section angles are NOT simulated here yet.
 
 Angles are illustrative values, not measurements, and the issue codes in the labels are proposals that are not
 part of docs/event-contracts.md.

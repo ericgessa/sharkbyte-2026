@@ -175,21 +175,34 @@ never stops counting; failed saves are retried when `finish` is called.
   "schema_version": 1,
   "type": "sensor_update",
   "session_id": "UUID",
-  "device_id": "esp32-01",
+  "device_id": "esp32-spine",
   "sequence": 56,
   "timestamp_ms": 123456,
   "data": {
-    "flex_raw": 1780,
-    "imu_pitch_deg": 12.4,
-    "imu_roll_deg": 1.0,
-    "accel_z_g": 0.98
+    "imu_pitch_deg": 30.1,
+    "imu_roll_deg": -2.0,
+    "spine_upper_deg": 4.2,
+    "spine_mid_deg": -1.5,
+    "spine_lumbar_deg": 18.0
   }
 }
 ```
 
-`data` fields (all optional, at least one required; units are what the sensor reports, not calibrated angles):
-`flex_raw` (raw ADC counts, ≥ 0), `imu_pitch_deg` / `imu_roll_deg` / `imu_yaw_deg` (-360..360),
-`accel_x_g` / `accel_y_g` / `accel_z_g` (g, -64..64). `device_id`: 1-64 chars of `A-Za-z0-9_.:-`.
+`data` fields (all optional, at least one required; degrees unless noted, measured tilt rather than validated
+anatomical angles). The wearable is described in [`hardware/README.md`](../hardware/README.md):
+
+| Field | Range | Meaning |
+| --- | --- | --- |
+| `imu_pitch_deg` | -360..360 | Upper-back (BNO085) forward tilt vs the calibrated neutral posture, + = forward |
+| `imu_roll_deg` | -360..360 | Upper-back sideways tilt, + = toward the wearer's right |
+| `imu_yaw_deg` | -360..360 | Heading. Accepted but the wearable doesn't send it (it drifts) |
+| `spine_upper_deg` | -180..180 | Bend within the upper back: BNO085 minus MPU A, + = bending forward |
+| `spine_mid_deg` | -180..180 | Bend within the mid back: MPU A minus MPU B |
+| `spine_lumbar_deg` | -180..180 | Bend within the lower back: MPU B minus MPU C (sacrum). The main one for lifting form |
+| `accel_x_g` / `accel_y_g` / `accel_z_g` | -64..64 g | Raw acceleration. Accepted but not sent by the current firmware |
+
+Anything else in `data` (including the old `flex_raw`; the project has no flex sensors) is rejected.
+`device_id`: 1-64 chars of `A-Za-z0-9_.:-`.
 `timestamp_ms` is the **device's own clock** (any origin); the server anchors it to server time on the first
 message from that device. Do not try to match it to the camera's timestamps.
 

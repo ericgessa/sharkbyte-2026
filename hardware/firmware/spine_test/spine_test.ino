@@ -15,6 +15,13 @@
 //   2. Slowly bend forward as far as is comfortable and hold.
 // The sketch learns which way is "forward" for each sensor from that bend,
 // so the sensors don't need to be perfectly aligned.
+//
+// Serial commands: 'c' recalibrate | 'n' normal view | 'd' per-sensor debug view
+//                  's' stream mode: one JSON line per sample for the /pose page,
+//                      which forwards it to the server as a sensor_update.
+// Stream line (fields with a missing sensor are left out):
+//   {"t":123456,"imu_pitch_deg":30.1,"imu_roll_deg":-2.0,
+//    "spine_upper_deg":4.2,"spine_mid_deg":-1.5,"spine_lumbar_deg":18.0}
 
 #include <Wire.h>
 #include <Adafruit_BNO08x.h>
@@ -37,6 +44,12 @@ const uint32_t TICK_US = 10000;      // 100 Hz
 const int NEUTRAL_TICKS = 300;       // 3 s
 const int BEND_TICKS = 100;          // 1 s
 const uint32_t BEND_WAIT_MS = 4000;
+const uint32_t PRINT_MS = 100;       // human views: 10 lines/s
+const uint32_t STREAM_MS = 50;       // stream mode: 20 samples/s to the server
+// The server expects imu_roll_deg + = leaning toward the wearer's RIGHT.
+// The sketch's sideways sign depends on how the BNO085 is mounted: lean right
+// in the debug view, and if "BNO side" goes negative, set this to -1.
+const float ROLL_SIGN = 1.0f;
 
 // ---------- Small 3D vector helpers ----------
 struct V3 { float x, y, z; };
@@ -69,7 +82,8 @@ enum Phase { NEUTRAL, BEND_WAIT, BEND_HOLD, LIVE };
 Phase phase;
 int tickCount = 0;
 uint32_t phaseStart = 0, lastTick = 0, lastPrint = 0;
-bool debugView = false;
+enum View { NORMAL_VIEW, DEBUG_VIEW, STREAM_VIEW };
+View view = NORMAL_VIEW;
 uint32_t bnoEvents = 0, bnoEventsLast = 0;
 
 // ---------- MPU access (AD0 select) ----------
@@ -140,7 +154,7 @@ void finishCalibration() {
   }
   Serial.println("\nStand back up. Live readings in degrees (+ = bending forward).");
   Serial.println("torso = whole upper body lean | upper/mid/lumbar = bend within each section");
-  Serial.println("Send 'c' to recalibrate, 'd' to toggle the per-sensor debug view.\n");
+  Serial.println("Send 'c' to recalibrate, 'n' normal view, 'd' per-sensor debug view, 's' JSON stream.\n");
 }
 
 // Signed forward angle of sensor i relative to neutral, in degrees
@@ -208,6 +222,19 @@ void tick(float dt) {
   }
 }
 
+// A difference of two angles can reach +/-360; bring it back into -180..180 (NaN passes through)
+float wrap180(float d) {
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  return d;
+}
+
+// Appends ,"name":value to the current JSON line, or nothing if the value is missing
+void printField(const char* name, float v) {
+  if (isnan(v)) return;
+  Serial.printf(",\"%s\":%.2f", name, v);
+}
+
 // ---------- Setup / loop ----------
 void setup() {
   Serial.begin(115200);
@@ -263,14 +290,12 @@ void setup() {
 void loop() {
   pollBNO();
 
-  if (Serial.available()) {
+  while (Serial.available()) {
     char ch = Serial.read();
     if (ch == 'c' || ch == 'C') startCalibration();
-    if (ch == 'd' || ch == 'D') {
-      debugView = !debugView;
-      Serial.println(debugView ? "\n[debug view: each sensor on its own]"
-                               : "\n[normal view: spine sections]");
-    }
+    if (ch == 'n' || ch == 'N') { view = NORMAL_VIEW; Serial.println("\n[normal view: spine sections]"); }
+    if (ch == 'd' || ch == 'D') { view = DEBUG_VIEW;  Serial.println("\n[debug view: each sensor on its own]"); }
+    if (ch == 's' || ch == 'S') { view = STREAM_VIEW; Serial.println("\n[stream view: JSON lines]"); }
   }
 
   uint32_t now = micros();
@@ -280,18 +305,31 @@ void loop() {
     tick(dt);
   }
 
-  if (phase == LIVE && millis() - lastPrint >= 100) {
+  uint32_t every = view == STREAM_VIEW ? STREAM_MS : PRINT_MS;
+  if (phase == LIVE && millis() - lastPrint >= every) {
     lastPrint = millis();
     float a[NS];
     for (int i = 0; i < NS; i++) a[i] = ok[i] ? forwardAngle(i) : NAN;
 
     // Bottom to top: C(0) -> B(1) -> A(2) -> BNO(3)
-    float lumbar = a[1] - a[0];
-    float mid    = a[2] - a[1];
-    float upper  = a[3] - a[2];
+    float lumbar = wrap180(a[1] - a[0]);
+    float mid    = wrap180(a[2] - a[1]);
+    float upper  = wrap180(a[3] - a[2]);
     float torso  = a[3];
 
-    if (debugView) {
+    if (view == STREAM_VIEW) {
+      // One JSON object per line. A missing sensor gives NaN, which JSON can't hold: leave that field out.
+      Serial.printf("{\"t\":%lu", (unsigned long)millis());
+      printField("imu_pitch_deg", torso);
+      printField("imu_roll_deg", ok[BNO] ? ROLL_SIGN * sideAngle(BNO) : NAN);
+      printField("spine_upper_deg", upper);
+      printField("spine_mid_deg", mid);
+      printField("spine_lumbar_deg", lumbar);
+      Serial.println("}");
+      return;
+    }
+
+    if (view == DEBUG_VIEW) {
       // Each sensor on its own: fwd = forward/back tilt, side = sideways tilt
       const char* tag[NS] = {"C", "B", "A", "BNO"};
       for (int i = 0; i < NS; i++) {

@@ -42,12 +42,15 @@ the rule-based path is the fallback.
 There's no real hardware data yet, so `sensor_simulation.py` generates **simulated** `sensor_update` messages
 that match the contract in `docs/event-contracts.md`. Every message passes the server's `SensorUpdate` validation.
 
-**Assumed mounting** (confirm with the hardware team): one IMU flat on the upper back, between the shoulder blades.
+**Mounting**: one IMU flat on the upper back, between the shoulder blades. The hardware team confirmed this: it's
+the BNO085 in [`hardware/README.md`](../hardware/README.md). The wearable also sends per-section spine bend
+(`spine_upper_deg`, `spine_mid_deg`, `spine_lumbar_deg`), which this coach doesn't use or simulate yet. Its pitch is
+measured from the wearer's calibrated standing posture, not from true vertical.
 
 * `imu_pitch_deg`: forward tilt of the upper back from vertical (+ = leaning forward)
 * `imu_roll_deg`: sideways tilt (+ = toward the user's right)
 * `accel_x/y/z_g`: gravity plus a little squat motion, about 1 g at rest
-* Not modelled: flex sensor (placement undecided) and yaw (drifts without a magnetometer)
+* Not modelled: the spine section angles, and yaw (drifts without a magnetometer). The project has no flex sensors.
 
 Each scenario injects a known pattern, so detection can be checked against a correct answer:
 
@@ -209,7 +212,8 @@ output says why, e.g. `(fallback: ClientError: 400 INVALID_ARGUMENT ...)` or `(f
 
 ## Questions for the team
 
-* **Hardware:** is the IMU between the shoulder blades, flat? Which way are its axes? Is there a flex sensor,
-  and where? What sample rate will the ESP32 actually send?
+* **Hardware:** answered in `hardware/README.md`. The BNO085 sits between the shoulder blades; calibration learns
+  each sensor's forward direction, so axis orientation doesn't matter; no flex sensor; 20 samples/s over USB.
+  Still open: confirming the `imu_roll_deg` sign on a real wearer.
 * **App:** how should a posture warning look compared with a camera tip (banner, toast, haptic, spoken)?
 * **Everyone:** OK to wire this into the live WebSocket, and who should review that change?

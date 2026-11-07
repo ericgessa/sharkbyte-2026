@@ -18,7 +18,7 @@ Build a hackathon-ready personal gym coach that combines webcam pose estimates a
 2. The frontend starts a squat workout and shows live camera tracking with consent.
 3. Pose-landmark measurements reach the backend via an authenticated WebSocket.
 4. The backend tracks movement phases and counts repetitions using deterministic, testable logic.
-5. Optionally incorporate ESP32 flex/IMU measurements when connected; gracefully degrade to camera-only mode when absent.
+5. Optionally incorporate ESP32 spine IMU measurements when connected; gracefully degrade to camera-only mode when absent.
 6. At least one repeated observable movement issue triggers a concise coaching message; avoid messages every frame.
 7. Completed repetitions and coaching events persist in Supabase and appear in a workout summary.
 8. A full local demo works with prerecorded/sample pose and sensor messages even if live hardware is unavailable.
@@ -27,7 +27,7 @@ Build a hackathon-ready personal gym coach that combines webcam pose estimates a
 
 - **Frontend (React, TypeScript):** Camera permission, MediaPipe inference, drawing landmarks, controls, displaying rep counts and coaching messages. Do not put database secret keys or LLM API keys in client code.
 - **Backend (Python 3.11+, FastAPI):** Session ownership, request validation, WebSocket transport, timestamp alignment, rep state machines, coaching orchestration, Supabase persistence.
-- **Hardware (ESP32, Arduino C++):** Send timestamped, device-identified flex/IMU readings using an agreed protocol. Sensor readings are not automatically anatomical angles; calibrate and label units.
+- **Hardware (ESP32, Arduino C++):** Send timestamped, device-identified IMU readings (upper-back tilt plus per-section spine bend; no flex sensors) using the `sensor_update` contract. Sensor readings are not automatically anatomical angles; calibrate and label units.
 - **Database (Supabase Postgres):** Persist users, exercises, sessions, completed repetitions, coaching events. Do not write every webcam frame or high-frequency sensor sample to PostgreSQL.
 - **AI coach:** Receives summarized, structured exercise events and limited history. It chooses among approved coaching actions. It never performs frame-by-frame rep counting and never makes clinical diagnoses.
 - Separate the fast motion-processing loop from slower LLM requests. A failed or slow LLM must not interrupt rep counting.
@@ -101,12 +101,12 @@ Example sensor event:
   "schema_version": 1,
   "type": "sensor_update",
   "session_id": "UUID",
-  "device_id": "esp32-01",
+  "device_id": "esp32-spine",
   "sequence": 56,
   "timestamp_ms": 1794000000012,
   "data": {
-    "flex_raw": 1780,
-    "imu_pitch_deg": 12.4
+    "imu_pitch_deg": 12.4,
+    "spine_lumbar_deg": 8.0
   }
 }
 ```
@@ -149,7 +149,7 @@ Example outgoing feedback event:
 - `GET /api/workouts/{session_id}` — session metadata and summary, ownership checked.
 - `POST /api/workouts/{session_id}/finish` — finalize workout and persist summary.
 - `WS /ws/workouts/{session_id}` — authenticated live events (pose updates, possibly sensor updates, rep events, coaching feedback).
-- Optional `POST /api/devices/{device_id}/readings` or separate authenticated hardware WebSocket as the ESP32 transport is finalized.
+- ESP32 data has no separate endpoint: the client relays `sensor_update` over the workout WebSocket (USB serial -> Web Serial on the `/pose` page).
 - Document requests, responses, auth method, errors, and reconnection behavior.
 
 ## Exercise analysis requirements
@@ -210,7 +210,7 @@ Agent guardrails:
 ## Open team decisions
 
 - Is MediaPipe running in the React browser or Python service? (Browser recommended.)
-- How does ESP32 connect: browser BLE, direct WebSocket, or MQTT bridge? (Choose one for MVP.)
+- How does ESP32 connect? **Decided for MVP: USB serial.** The `/pose` page reads it with Web Serial and relays `sensor_update` over the workout socket. BLE may come later.
 - Which LLM provider and model does the team have access to?
 - Will demo accounts use Supabase Auth or an isolated, explicitly secured test identity?
 - Which camera angles, exercises, and sensor attachment locations can be reliably demonstrated?

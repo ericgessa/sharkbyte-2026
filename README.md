@@ -11,9 +11,10 @@ An AI gym coach built from three layers:
   providers implemented are **Gemini** (the team's plan) and Anthropic's Claude, chosen with one setting
   (see [`docs/AI_COACH.md`](docs/AI_COACH.md)). Neither has been run against a real key yet.
 
-Sensor input from an ESP32 is accepted by the backend (`sensor_update`) and stored. The wearable's
-bench-test firmware and its calibration live in [`hardware/`](hardware/); it doesn't send data to the
-server yet (see [`hardware/README.md`](hardware/README.md)).
+A spine wearable (an ESP32 with four IMUs down the back, in [`hardware/`](hardware/)) measures upper-back tilt
+and how much the upper, mid and lower back each bend. It plugs in over USB; the `/pose` page relays its readings
+to the backend as `sensor_update` messages, which are stored. The coach doesn't use them yet
+(see [`hardware/README.md`](hardware/README.md)).
 
 > **Status:** the backend is built and tested against **simulated** data. Nothing has been validated with a
 > real camera or wearable yet, MediaPipe pose tracking exists **for the web only** (a developer page,
@@ -159,7 +160,9 @@ Run the tests:
 - [x] Simulated pose stream for demos and tests
 - [x] Phase 2: Supabase auth (JWT validation, session ownership) and persistence
 - [x] `coaching_feedback` event (rule-based; optional LLM wording)
-- [x] ESP32 `sensor_update` messages accepted and stored (firmware and calibration still to do)
+- [x] ESP32 `sensor_update` messages accepted and stored
+- [x] Spine wearable firmware with calibration, relayed over USB by the `/pose` page (not yet tried end to end on hardware)
+- [ ] Coaching from the spine section angles (lumbar rounding)
 - [x] CV layer in the browser: MediaPipe pose capture and joint-angle computation (`/pose`; tested on a still image and a simulated stream, not a live camera)
 - [ ] CV layer on phones (native camera + MediaPipe) and a real-camera accuracy check
 - [ ] Mobile live rep UI

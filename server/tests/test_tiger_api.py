@@ -129,18 +129,18 @@ def test_esp32_sensor_updates_arrive_over_the_existing_socket(client, tiger):
     sid = new_session(client)
     ws_cm, ws = open_ready(client, sid)
     try:
-        ws.send_text(json.dumps(sensor_msg(sid, 1, 5000, flex_raw=1780, imu_pitch_deg=12.4, accel_z_g=0.98)))
-        ws.send_text(json.dumps(sensor_msg(sid, 2, 5020, flex_raw=1790)))
+        ws.send_text(json.dumps(sensor_msg(sid, 1, 5000, spine_lumbar_deg=17.8, imu_pitch_deg=12.4, accel_z_g=0.98)))
+        ws.send_text(json.dumps(sensor_msg(sid, 2, 5020, spine_lumbar_deg=17.9)))
         assert wait_for(lambda: len(tiger.rows) == 4)
     finally:
         ws_cm.__exit__(None, None, None)
     by_metric = {}
     for r in tiger.rows:
         by_metric.setdefault(r.metric_name, []).append(r)
-    assert set(by_metric) == {"flex_value", "imu_pitch", "accel_z"}
+    assert set(by_metric) == {"spine_lumbar", "imu_pitch", "accel_z"}
     assert all(str(r.session_id) == sid and r.sensor_id == "esp32-01" for r in tiger.rows)
-    assert by_metric["flex_value"][0].source == "flex_sensor" and by_metric["imu_pitch"][0].source == "imu"
-    a, b = by_metric["flex_value"]
+    assert all(r.source == "imu" for r in tiger.rows)
+    a, b = by_metric["spine_lumbar"]
     # Spacing is preserved to within datetime's 1 microsecond rounding (a 1e-6 tolerance flaked ~3% of the time).
     assert (b.time - a.time).total_seconds() == pytest.approx(0.02, abs=1e-4)
 
@@ -151,9 +151,9 @@ def test_invalid_sensor_update_gets_an_error_and_the_socket_stays_usable(client,
     try:
         ws.send_text(json.dumps(sensor_msg(sid, 1, 1, imu_pitch_deg=9999)))
         assert ws.receive_json()["code"] == "invalid_message"
-        ws.send_text(json.dumps(sensor_msg(str(uuid4()), 2, 2, flex_raw=1)))  # another session's id
+        ws.send_text(json.dumps(sensor_msg(str(uuid4()), 2, 2, spine_lumbar_deg=1)))  # another session's id
         assert ws.receive_json()["code"] == "session_mismatch"
-        ws.send_text(json.dumps(sensor_msg(sid, 3, 3, flex_raw=1)))
+        ws.send_text(json.dumps(sensor_msg(sid, 3, 3, spine_lumbar_deg=1)))
         assert wait_for(lambda: len(tiger.rows) == 1)
     finally:
         ws_cm.__exit__(None, None, None)
@@ -165,7 +165,7 @@ def test_nothing_is_recorded_while_the_user_is_paused(client, tiger):
     try:
         ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": sid, "signal": "pause"}))
         assert ws.receive_json()["paused"] is True
-        ws.send_text(json.dumps(sensor_msg(sid, 1, 1, flex_raw=5)))
+        ws.send_text(json.dumps(sensor_msg(sid, 1, 1, spine_lumbar_deg=5)))
         for m in list(squat_messages(sid, reps=1))[:20]:
             ws.send_text(json.dumps(m))
         time.sleep(0.3)
@@ -199,8 +199,8 @@ def test_readings_buffered_during_an_outage_are_delivered_when_it_ends(client, t
     sid = new_session(client)
     ws_cm, ws = open_ready(client, sid)
     try:
-        ws.send_text(json.dumps(sensor_msg(sid, 1, 1000, flex_raw=1)))
-        ws.send_text(json.dumps(sensor_msg(sid, 2, 1020, flex_raw=2)))
+        ws.send_text(json.dumps(sensor_msg(sid, 1, 1000, spine_lumbar_deg=1)))
+        ws.send_text(json.dumps(sensor_msg(sid, 2, 1020, spine_lumbar_deg=2)))
         assert wait_for(lambda: client.ingest.stats.failed_batches >= 1)
         assert tiger.rows == []
         tiger.fail = False  # Tiger Data comes back
@@ -231,7 +231,7 @@ def test_without_tiger_data_configured_the_app_works_exactly_as_before(store):
         with c.websocket_connect(f"/ws/workouts/{sid}") as ws:
             ws.send_text(json.dumps(auth_message()))
             ws.receive_json()
-            ws.send_text(json.dumps(sensor_msg(sid, 1, 1, flex_raw=1)))  # accepted and ignored
+            ws.send_text(json.dumps(sensor_msg(sid, 1, 1, spine_lumbar_deg=1)))  # accepted and ignored
             for m in squat_messages(sid, reps=2):
                 ws.send_text(json.dumps(m))
             assert [ws.receive_json()["rep_count"] for _ in range(2)] == [1, 2]
