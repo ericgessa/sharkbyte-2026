@@ -52,6 +52,33 @@ def wait_for(predicate, timeout=3.0):
     return False
 
 
+# ------------------------------------------------------------------ CORS (Expo web)
+
+
+def test_cors_preflight_allows_expo_web_with_auth_header(client):
+    r = client.options(
+        "/api/workouts",
+        headers={
+            "Origin": "http://localhost:8081",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "*"
+    assert "authorization" in r.headers["access-control-allow-headers"].lower()
+    assert "access-control-allow-credentials" not in r.headers  # bearer tokens, never cookies
+
+
+def test_cors_can_be_restricted_by_env(monkeypatch, store):
+    monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com")
+    with TestClient(create_app(store=store, auth=FakeAuth())) as c:
+        ok = c.get("/health", headers={"Origin": "https://app.example.com"})
+        other = c.get("/health", headers={"Origin": "https://evil.example.com"})
+    assert ok.headers["access-control-allow-origin"] == "https://app.example.com"
+    assert "access-control-allow-origin" not in other.headers
+
+
 # ------------------------------------------------------------------ REST
 
 
