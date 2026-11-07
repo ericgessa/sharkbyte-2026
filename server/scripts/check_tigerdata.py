@@ -13,7 +13,23 @@ import sys
 from uuid import UUID
 
 from app.services import analytics
-from app.services.timeseries import TigerDataConfigError, TigerDataError, TigerStore, tigerdata_url
+from app.services.timeseries import (
+    TigerDataConfigError,
+    TigerDataError,
+    TigerStore,
+    describe_url,
+    diagnose_connection,
+    tigerdata_url,
+)
+
+HINTS = {
+    "no_password": "The URL has no password. Add it to TIGERDATA_URL (postgres://user:PASSWORD@host:port/tsdb?sslmode=require)\n"
+    "      or put it on its own line in server/.env as TIGERDATA_PASSWORD=... (special characters are fine there).",
+    "wrong_password": "The server rejected the password. Re-copy it, or reset it in the Tiger console (Service settings).",
+    "ssl": "SSL problem: use sslmode=require in the URL, as the Tiger console shows.",
+    "unreachable": "Cannot reach the host/port: check the URL, that the service is running (not paused), and your network/VPN.",
+    "other": "Unexpected connection error. Re-copy TIGERDATA_URL from the Tiger console.",
+}
 
 
 def main() -> int:
@@ -26,6 +42,10 @@ def main() -> int:
     except TigerDataConfigError as exc:
         print(f"CONFIG ERROR: {exc}")
         return 2
+
+    d = describe_url()
+    print(f"URL shape: user={d['user']} password={'present' if d['has_password'] else 'MISSING'} host={d['host']} "
+          f"port={d['port']} database={d['database']} sslmode={d['sslmode']}")
 
     store = TigerStore()
     try:
@@ -53,7 +73,10 @@ def main() -> int:
             if o["readings"]:
                 print(f"  knee angle (confident frames): {analytics.angle_stats(store, args.session)}")
     except TigerDataError as exc:
-        print(f"FAIL  {exc}  -> check TIGERDATA_URL, that the service is running, and your network")
+        print(f"FAIL  {exc}")
+        why = diagnose_connection()
+        print(f"      diagnosis: {why}")
+        print("      " + HINTS.get(why, HINTS["other"]))
         return 1
     finally:
         store.close()

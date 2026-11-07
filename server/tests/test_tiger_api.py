@@ -102,6 +102,7 @@ def test_only_summaries_go_to_supabase_never_the_raw_stream(client, store, tiger
             ws.send_text(json.dumps(m))
         [ws.receive_json() for _ in range(2)]
         assert wait_for(lambda: len(store.reps.get(sid, {})) == 2)
+        assert wait_for(lambda: len(tiger.rows) > 100)  # the buffer flushes on a timer, so wait for it
     assert len(store.reps[sid]) == 2  # Supabase got 2 rep rows
     assert len(tiger.rows) > 100  # ...while Tiger Data got the high-frequency readings
 

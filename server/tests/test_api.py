@@ -441,3 +441,18 @@ def test_unknown_signal_is_rejected_and_other_sessions_signal_is_mismatch(client
         assert ws.receive_json()["code"] == "invalid_message"
         signal(ws, str(uuid4()), "pain")
         assert ws.receive_json()["code"] == "session_mismatch"
+
+
+# ------------------------------------------------------------------ helpful errors for new frontend devs
+
+
+def test_401_messages_tell_you_how_to_get_a_token(client):
+    missing = client.post("/api/workouts", json={})
+    assert missing.status_code == 401 and "Bearer" in missing.json()["detail"] and "frontend-integration" in missing.json()["detail"]
+    bad = client.post("/api/workouts", json={}, headers={"Authorization": "Bearer sb_publishable_abc"})
+    assert bad.status_code == 401 and "access_token" in bad.json()["detail"] and "publishable" in bad.json()["detail"]
+
+
+def test_root_explains_the_service_instead_of_a_bare_404(client):
+    r = client.get("/")
+    assert r.status_code == 200 and r.json()["service"] == "SharkByte API" and "Bearer" in r.json()["auth"]
