@@ -12,13 +12,13 @@ import { detectOnImageUrl } from '@/pose/mediapipe';
 import { PoseStreamer, type ServerEvent } from '@/pose/protocol';
 import { simulatedPushUpFrames, simulatedSquatFrames } from '@/pose/simulate';
 import { createWorkout, finishWorkout, WorkoutSocket, type CreatedWorkout } from '@/pose/workout-client';
-
-const DEFAULT_API = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8000';
+import { getApiUrl } from '@/utils/api-url';
+import { getAccessToken, signOut } from '@/utils/auth';
 
 const CLOSE_HINT: Record<number, string> = {
   1006: 'connection lost',
   1009: 'message too large',
-  4401: 'login rejected or expired: paste a fresh access token',
+  4401: 'login rejected or expired: start again',
   4404: 'workout not found',
   4409: 'workout already finished',
   4410: 'taken over by another connection',
@@ -34,14 +34,11 @@ const fmt = (v: number | null) => (v === null ? '-' : `${v.toFixed(1)}`);
 
 /**
  * Developer lab for the camera pipeline: MediaPipe pose tracking in the browser -> joint angles -> the SharkByte
- * backend, with live rep counts and coaching cues coming back. NOT the product UI: the real app signs the user in
- * with Supabase; here you paste an access token (see docs/frontend-integration.md).
+ * backend, with live rep counts and coaching cues coming back. NOT the product UI. Uses the signed-in user's session.
  * Also has a "simulate squats" button and an image test, so the backend loop can be exercised without a camera.
  */
 export function PoseLab() {
   const theme = useTheme();
-  const [apiUrl, setApiUrl] = useState(DEFAULT_API);
-  const [token, setToken] = useState('');
   const [exercise, setExercise] = useState('squat');
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -134,11 +131,7 @@ export function PoseLab() {
   };
 
   const startWorkout = async () => {
-    const accessToken = token.trim();
-    if (!accessToken) {
-      setError('Paste a Supabase access token first.');
-      return;
-    }
+    const apiUrl = getApiUrl();
     setError(null);
     setPhase('starting');
     setReps(0);
@@ -146,6 +139,7 @@ export function PoseLab() {
     setLog([]);
     setTracking('ok');
     try {
+      const accessToken = await getAccessToken();
       const w = await createWorkout(apiUrl, accessToken, exercise.trim() || 'squat');
       workoutRef.current = w;
       streamerRef.current = new PoseStreamer(w.session_id);
@@ -169,7 +163,7 @@ export function PoseLab() {
     const w = workoutRef.current;
     if (!w) return;
     try {
-      const r = await finishWorkout(apiUrl, token.trim(), w.session_id);
+      const r = await finishWorkout(getApiUrl(), await getAccessToken(), w.session_id);
       note(`finished: ${r.total_reps} reps saved`);
     } catch (e) {
       setError(messageOf(e));
@@ -209,7 +203,7 @@ export function PoseLab() {
    * the stream, counted 5 push-ups from the elbow angle, coached the depth drop, and saved 5 reps.
    */
   const runPushUpTest = async () => {
-    const accessToken = token.trim();
+    const apiUrl = getApiUrl();
     const lines: string[] = [];
     const add = (line: string) => {
       lines.push(line);
@@ -219,16 +213,12 @@ export function PoseLab() {
       add(`${ok ? 'ok  ' : 'FAIL'}  ${what}`);
       return ok;
     };
-    if (!accessToken) {
-      setPushUpState('fail');
-      add('FAIL  paste a Supabase access token first (section 2)');
-      return;
-    }
     setPushUpState('running');
     setPushUpLines([]);
     const events: ServerEvent[] = [];
     let allOk = true;
     try {
+      const accessToken = await getAccessToken();
       const w = await createWorkout(apiUrl, accessToken, 'push-up');
       allOk = check(w.exercise === 'push-up' && w.analysis_supported, `push-up workout created, analysis supported (${w.exercise}, ${w.analysis_supported})`) && allOk;
 
@@ -308,12 +298,7 @@ export function PoseLab() {
             </ThemedText>
           </Section>
 
-          <Section title="2. Backend">
-            <ThemedText type="small" themeColor="textSecondary">
-              Paste the signed-in user&apos;s Supabase ACCESS token (not the publishable key). The real app does the sign-in.
-            </ThemedText>
-            <TextInput style={inputStyle} value={apiUrl} onChangeText={setApiUrl} autoCapitalize="none" autoCorrect={false} placeholder="API URL" placeholderTextColor={theme.textSecondary} testID="lab-api-url" />
-            <TextInput style={inputStyle} value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} secureTextEntry placeholder="access token" placeholderTextColor={theme.textSecondary} testID="lab-token" />
+          <Section title="2. Workout">
             <TextInput style={inputStyle} value={exercise} onChangeText={setExercise} autoCapitalize="none" autoCorrect={false} placeholder="exercise (squat)" placeholderTextColor={theme.textSecondary} testID="lab-exercise" />
             <View style={styles.row}>
               <Btn label="Exercise: squat" onPress={() => setExercise('squat')} disabled={live} testID="lab-pick-squat" />
@@ -325,6 +310,7 @@ export function PoseLab() {
               <Btn label="Pause" onPress={() => signal('pause')} disabled={!live} />
               <Btn label="Resume" onPress={() => signal('resume')} disabled={!live} />
               <Btn label="Pain / stop" onPress={() => signal('pain')} disabled={!live} danger />
+              <Btn label="Sign out" onPress={() => void signOut()} disabled={live || phase === 'starting'} testID="lab-sign-out" />
             </View>
             {error && (
               <ThemedText type="small" style={styles.error} testID="lab-error">
@@ -346,7 +332,7 @@ export function PoseLab() {
           <Section title="3. Push-up mini test">
             <ThemedText type="small" themeColor="textSecondary">
               One tap, no camera: creates a push-up workout, streams 5 simulated push-ups (the last two shallower) to the
-              backend and checks the result. Needs the API URL and token from section 2.
+              backend and checks the result.
             </ThemedText>
             <View style={styles.row}>
               <Btn label={pushUpState === 'running' ? 'Running...' : 'Run push-up test'} onPress={runPushUpTest} disabled={pushUpState === 'running'} testID="pushup-test-run" />
