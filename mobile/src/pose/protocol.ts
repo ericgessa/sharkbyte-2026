@@ -17,7 +17,11 @@ export type PoseUpdate = {
 export type UserSignal = 'pause' | 'resume' | 'pain';
 
 export type RepMetrics = {
-  min_knee_angle_deg: number;
+  /** The deepest the counted joint got (knee for squats, elbow for push-ups). Use this one. */
+  min_angle_deg: number;
+  joint: 'knee' | 'elbow';
+  /** The original squat field: same value as `min_angle_deg` for knee exercises, `null` for other joints. */
+  min_knee_angle_deg: number | null;
   descent_ms: number;
   ascent_ms: number;
   duration_ms: number;

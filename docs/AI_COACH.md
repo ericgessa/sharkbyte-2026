@@ -96,7 +96,9 @@ fallback, the timeout and the background delivery are in `CoachAgent` and apply 
 
 ## Limits
 
-* Only squat produces cues today (it is the only analyzed exercise), so only squat cues are ever worded.
+* Only squat cues are ever worded by the model. Push-ups are analyzed too, but the model's context and wording are
+  knee-specific, so push-up cues and recaps use the rule text (`source: "rules"`). Extend `build_cue_context` and the
+  prompts per joint before turning the model on for other exercises.
 * The wording and the checks have only been exercised with scripted fake answers. Real output may trip the strict
   checks (for example by citing a number that is not in the data); that safely falls back to the rule message, and
   `agent.stats` / `fallback_reasons` show how often.

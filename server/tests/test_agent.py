@@ -194,8 +194,8 @@ def test_rules_summary_reads_the_data_honestly():
     deeper = {"supabase": {"stats": {"rep_count": 1, "depth_change_deg": -6.0}, "coaching_events": []}}
     assert "1 rep." in rules_summary(deeper) and "deeper" in rules_summary(deeper)
     assert "No completed reps" in rules_summary({"supabase": {"stats": {"rep_count": 0}, "coaching_events": []}})
-    logged = rules_summary(SUMMARY_CTX, analysis_supported=False, exercise_name="push-up")
-    assert "push-up workout was logged" in logged and "aren't available" in logged and "reps" not in logged.split("aren't")[0].replace("Rep counting", "")
+    logged = rules_summary(SUMMARY_CTX, analysis_supported=False, exercise_name="pull-up")
+    assert "pull-up workout was logged" in logged and "aren't available" in logged and "reps" not in logged.split("aren't")[0].replace("Rep counting", "")
 
 
 def test_a_pain_report_always_gets_the_rules_recap_and_never_calls_the_llm():
@@ -494,7 +494,7 @@ def test_a_cue_goes_to_the_connection_that_is_current_when_the_llm_answers():
 def test_an_exercise_without_analysis_never_involves_the_llm():
     prov = FakeProvider()
     with make_client(InMemoryStore(), CoachAgent(prov)) as c:
-        sid = new_session(c, exercise="push-up")
+        sid = new_session(c, exercise="pull-up")
         cm, ws, ready = open_ws(c, sid)
         try:
             assert ready["analysis_supported"] is False
@@ -580,9 +580,9 @@ def test_recap_after_a_pain_report_is_always_the_rules_text_and_does_not_call_th
 
 def test_recap_for_an_exercise_without_analysis_says_it_was_only_logged():
     with make_client(InMemoryStore(), CoachAgent(None)) as c:
-        sid = new_session(c, exercise="Push Up")
+        sid = new_session(c, exercise="Pull Up")
         r = c.get(f"/api/workouts/{sid}/coach-summary", headers=ALICE).json()
-    assert "push-up workout was logged" in r["summary"]
+    assert "pull-up workout was logged" in r["summary"]
 
 
 def test_recap_works_when_tiger_data_is_down_and_is_private_and_limited():

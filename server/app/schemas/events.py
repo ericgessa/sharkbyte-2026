@@ -111,7 +111,11 @@ class SessionState(_Strict):
 
 
 class RepMetricsOut(_Strict):
-    min_knee_angle_deg: float
+    # Squat: knee angle. Push-up: elbow angle. ``min_angle_deg`` is always the deepest value of the counted joint;
+    # ``min_knee_angle_deg`` repeats it for knee exercises (the original field) and is null for other joints.
+    min_knee_angle_deg: float | None
+    min_angle_deg: float
+    joint: Literal["knee", "elbow"]
     descent_ms: int
     ascent_ms: int
     duration_ms: int
@@ -190,9 +194,16 @@ class CoachingEventOut(_Strict):
 
 
 class StatsOut(_Strict):
-    """Knee angle: smaller = deeper. depth_change_deg > 0 means later reps were shallower."""
+    """Joint angle: smaller = deeper. depth_change_deg > 0 means later reps were shallower.
+
+    The ``*_angle_deg`` fields without "knee" cover whichever joint the exercise counts (knee or elbow); the
+    ``*_knee_*`` fields are the original squat names and are null for exercises that do not count the knee.
+    """
 
     rep_count: int
+    avg_min_angle_deg: float | None
+    deepest_angle_deg: float | None
+    shallowest_angle_deg: float | None
     avg_min_knee_angle_deg: float | None
     deepest_knee_angle_deg: float | None
     shallowest_knee_angle_deg: float | None

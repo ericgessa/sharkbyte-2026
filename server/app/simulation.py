@@ -33,6 +33,7 @@ def squat_messages(
     asymmetry_deg: float = 2.0,
     start_sequence: int = 0,
     start_ts: int = 1_794_000_000_000,
+    joint: str = "knee",  # "elbow" simulates a push-up (see pushup_messages)
 ) -> Iterator[dict[str, Any]]:
     """Yield ``pose_update`` messages for ``reps`` squats, standing before and after each."""
     seq, ts = start_sequence, start_ts
@@ -46,8 +47,8 @@ def squat_messages(
             "sequence": seq,
             "timestamp_ms": ts,
             "data": {
-                "left_knee_angle_deg": round(angle - asymmetry_deg / 2, 2),
-                "right_knee_angle_deg": round(angle + asymmetry_deg / 2, 2),
+                f"left_{joint}_angle_deg": round(angle - asymmetry_deg / 2, 2),
+                f"right_{joint}_angle_deg": round(angle + asymmetry_deg / 2, 2),
                 "landmark_confidence": confidence,
             },
         }
@@ -65,6 +66,14 @@ def squat_messages(
             yield frame(standing_deg - (standing_deg - rep_depth) * 0.5 * (1 - math.cos(2 * math.pi * phase)))
         for _ in range(rest_frames):
             yield frame(standing_deg)
+
+
+def pushup_messages(session_id: UUID | str, reps: int = 5, **kwargs: Any) -> Iterator[dict[str, Any]]:
+    """Simulated push-ups: the ELBOW angle goes from arms extended down to about 80 degrees and back."""
+    kwargs.setdefault("depth_deg", 80.0)
+    kwargs.setdefault("standing_deg", 165.0)
+    kwargs.setdefault("rep_ms", 1800)
+    yield from squat_messages(session_id, reps, joint="elbow", **kwargs)
 
 
 def _demo(base_url: str, reps: int, token: str) -> None:  # pragma: no cover - manual tool

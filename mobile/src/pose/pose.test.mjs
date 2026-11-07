@@ -157,7 +157,7 @@ test('the rate cap is configurable', () => {
 // ---------------------------------------------------------------- server events
 
 test('known server events parse; everything else is ignored safely', () => {
-  const rep = parseServerEvent(JSON.stringify({ type: 'rep_completed', session_id: 's', rep_count: 2, metrics: { min_knee_angle_deg: 85 } }));
+  const rep = parseServerEvent(JSON.stringify({ type: 'rep_completed', session_id: 's', rep_count: 2, metrics: { min_knee_angle_deg: 85, min_angle_deg: 85, joint: 'knee' } }));
   assert.equal(rep.type, 'rep_completed');
   assert.equal(rep.rep_count, 2);
   assert.equal(parseServerEvent(JSON.stringify({ type: 'coaching_feedback', message: 'x' })).type, 'coaching_feedback');

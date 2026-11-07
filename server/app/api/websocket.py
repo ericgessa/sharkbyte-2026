@@ -60,7 +60,9 @@ async def _send(ws: WebSocket, event: BaseModel) -> None:
 
 def _metrics_dict(r: RepMetrics) -> dict:
     return {
-        "min_knee_angle_deg": r.min_knee_angle_deg,
+        "min_knee_angle_deg": r.min_angle_deg if r.joint == "knee" else None,
+        "min_angle_deg": r.min_angle_deg,
+        "joint": r.joint,
         "descent_ms": r.descent_ms,
         "ascent_ms": r.ascent_ms,
         "duration_ms": r.duration_ms,
@@ -325,6 +327,8 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                     confidence=d.landmark_confidence,
                     left_knee_deg=d.left_knee_angle_deg,
                     right_knee_deg=d.right_knee_angle_deg,
+                    left_elbow_deg=d.left_elbow_angle_deg,
+                    right_elbow_deg=d.right_elbow_angle_deg,
                 )
             )
 
@@ -348,7 +352,7 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                 decision = live.coach.observe(r)
                 if decision is not None:
                     agent = ws.app.state.agent
-                    if agent.enabled:
+                    if agent.enabled and live.exercise is not None and live.exercise.llm_supported:
                         _spawn_agent_delivery(ws, live, decision, agent)  # background: counting never waits on the LLM
                     else:
                         await _deliver_coaching(ws, live, decision)

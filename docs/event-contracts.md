@@ -30,8 +30,11 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 **Two levels of support, do not confuse them.** _Logging_ works for every exercise: the workout is created,
 streamed to (camera/ESP32 readings are recorded in Tiger Data if configured), finished, shown in history, and the
 user can pause or report pain. _Analysis_ (the server counting reps and the rule-based coach giving feedback) exists
-for **squat only**. For every other exercise `analysis_supported` is `false`: the server does **not** count reps
-or coach, `total_reps` stays 0, and the app should say tracking isn't available yet rather than show a rep counter.
+for **squat** (counted from the knee angles) and **push-up** (counted from the elbow angles; the thresholds are untuned
+guesses, tried on simulated data only). For every other exercise `analysis_supported` is `false`: the server does
+**not** count reps or coach, `total_reps` stays 0, and the app should say tracking isn't available yet rather than
+show a rep counter. The optional LLM wording of cues and recaps is squat-only for now; push-up cues and recaps use
+the deterministic rule text (`source: "rules"`).
 
 `WorkoutOut`: `session_id`, `exercise` (canonical), `analysis_supported`, `status` (`active`\|`completed`), `started_at`, `ended_at`
 (null while active), `total_reps`, `dropped_frames`, `aborted_attempts` (the last two are live
@@ -44,6 +47,9 @@ counters, 0 when the session isn't streaming).
   "workout": { "...": "a WorkoutOut" },
   "stats": {
     "rep_count": 5,
+    "avg_min_angle_deg": 87.6,
+    "deepest_angle_deg": 85.0,
+    "shallowest_angle_deg": 98.0,
     "avg_min_knee_angle_deg": 87.6,
     "deepest_knee_angle_deg": 85.0,
     "shallowest_knee_angle_deg": 98.0,
@@ -55,6 +61,8 @@ counters, 0 when the session isn't streaming).
     {
       "rep_number": 1,
       "metrics": {
+        "min_angle_deg": 85.0,
+        "joint": "knee",
         "min_knee_angle_deg": 85.0,
         "duration_ms": 1716,
         "...": "..."
@@ -224,6 +232,8 @@ Every signal is answered with a `session_state` message (below).
   "session_id": "UUID",
   "rep_count": 5,
   "metrics": {
+    "min_angle_deg": 85.0,
+    "joint": "knee",
     "min_knee_angle_deg": 85.0,
     "descent_ms": 363,
     "ascent_ms": 396,
@@ -233,7 +243,12 @@ Every signal is answered with a `session_state` message (below).
 }
 ```
 
-`max_asymmetry_deg` is `null` if both knees were never visible in the same frame.
+`min_angle_deg` is the deepest value of the joint the exercise counts, and `joint` says which: `"knee"` (squat) or
+`"elbow"` (push-up). `min_knee_angle_deg` is the original squat field: the same number as `min_angle_deg` for knee
+exercises and `null` for elbow exercises, so new code should read `min_angle_deg`. In the summary `stats`, the
+`*_angle_deg` fields cover whichever joint is counted and the `*_knee_*` fields are null for push-ups.
+
+`max_asymmetry_deg` is `null` if both sides (both knees, or both elbows) were never visible in the same frame.
 `duration_ms` runs from leaving standing (< 150°) to returning to standing (≥ 160°).
 
 **Personal standing angle.** Those 150°/160° are the defaults. If someone's knees read lower than 160° when they stand (camera angle, slightly bent knees) and hold still for about a third of a second, the server lowers the standing threshold to just under their resting angle (never below 145°, never above 160°) and keeps the same 10° gap, so their reps are counted instead of silently ignored. Depth (≤ 110°) is not adapted. Checked on synthetic noisy data only (all 360 noisy runs counted exactly; fidgeting produced no false reps); not checked on real camera data.
