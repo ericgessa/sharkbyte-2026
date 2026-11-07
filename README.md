@@ -139,7 +139,7 @@ npx tsc --noEmit
 - **LLM coach** (`COACH_LLM_PROVIDER=gemini` + `GEMINI_API_KEY`, or `anthropic` + `ANTHROPIC_API_KEY`): optional and off by
   default. Backend only, never in the mobile app. Details: [`docs/AI_COACH.md`](docs/AI_COACH.md).
 
-## What works
+Run the tests:
 
 - Supabase login (JWT) on every API call; ownership enforced; row-level security on the tables.
 - Live workouts over a WebSocket: squat rep counting, rule-based coaching, pause / resume / **pain-stop**, ESP32 data
@@ -166,7 +166,10 @@ npx tsc --noEmit
 - [ ] `set_finished` event
 - [ ] A hosted deployment ([`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) is untested)
 
-## Docs
+```bash
+cd server
+python -m app.simulation --reps 5
+```
 
 - [`docs/frontend-integration.md`](docs/frontend-integration.md): how the mobile app connects (start here if you build the app)
 - [`docs/event-contracts.md`](docs/event-contracts.md): every REST endpoint and WebSocket message

@@ -101,3 +101,18 @@ fallback, the timeout and the background delivery are in `CoachAgent` and apply 
   checks (for example by citing a number that is not in the data); that safely falls back to the rule message, and
   `agent.stats` / `fallback_reasons` show how often.
 * Cost scales with workouts, not frames: a few short requests per workout plus occasional recaps.
+
+## Two coach modules (as of the merge with `main`)
+
+There are currently two separate, independent LLM coach implementations in `server/app/services/`:
+
+- `agent.py` (this document): rewords the **rule coach's rep cues** and writes **workout recaps**. It is wired into
+  the live WebSocket and REST endpoints, off by default, with Anthropic and Gemini providers.
+- `ai_coach.py` + `posture.py` (added on `main`, see their docstrings): turn **sensor-based posture decisions** into a
+  short Gemini-worded warning. Standalone: **nothing in the app imports them yet**, so they are not part of the live
+  workout flow. They are tested with a fake model (`tests/test_ai_coach.py`, `tests/test_posture.py`) and never run
+  against a real key.
+
+They do not share code. When the posture warnings are wired in, route them through the same guardrails as `agent.py`
+(length, no medical advice, numbers must come from the measured context, pain stops coaching) rather than keeping two
+sets of rules.
