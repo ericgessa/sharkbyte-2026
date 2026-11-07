@@ -68,6 +68,7 @@ class RuleCoach:
         # False after the user reports pain: no more technique coaching this session.
         self.enabled = True
         self.reps: list[RepMetrics] = []
+        self.history: list[tuple[int, str]] = []  # (rep_number, issue_code) of cues given
         self.messages_sent = 0
         self._last_message_rep: int | None = None
         self._last_rep_by_issue: dict[str, int] = {}
@@ -82,6 +83,7 @@ class RuleCoach:
                 self.messages_sent += 1
                 self._last_message_rep = rep.rep_number
                 self._last_rep_by_issue[issue] = rep.rep_number
+                self.history.append((rep.rep_number, issue))
                 return CoachingDecision(rep.rep_number, issue, MESSAGES[issue])
         return None
 

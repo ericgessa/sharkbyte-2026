@@ -30,6 +30,23 @@ class InMemoryStore:
         row = self.sessions.get(str(session_id))
         return dict(row) if row and row["user_id"] == user_id else None
 
+    ping_ok = True
+    ping_calls = 0
+
+    def ping(self) -> bool:
+        self.ping_calls += 1
+        return self.ping_ok
+
+    def list_all_session_ids(self, user_id: str) -> list[str]:
+        return [sid for sid, r in self.sessions.items() if r["user_id"] == user_id]
+
+    def delete_account(self, user_id: str) -> None:
+        if getattr(self, "fail_account_delete", False):
+            raise RuntimeError("simulated Supabase failure")
+        for sid in self.list_all_session_ids(user_id):
+            self.delete_session(sid, user_id)
+        self.deleted_users = getattr(self, "deleted_users", []) + [user_id]
+
     def delete_session(self, session_id, user_id: str) -> bool:
         row = self.sessions.get(str(session_id))
         if not row or row["user_id"] != user_id:
@@ -82,8 +99,16 @@ class InMemoryStore:
 class FakeAuth:
     TOKENS = {"alice-token": "user-alice", "bob-token": "user-bob"}
 
+    def __init__(self) -> None:
+        self.tokens = dict(self.TOKENS)
+        self.invalidated: list[str] = []
+
     def verify(self, access_token: str) -> str | None:
-        return self.TOKENS.get(access_token)
+        return self.tokens.get(access_token)
+
+    def invalidate_user(self, user_id: str) -> None:
+        self.invalidated.append(user_id)
+        self.tokens = {t: u for t, u in self.tokens.items() if u != user_id}  # like a deleted user's tokens dying
 
 
 ALICE = {"Authorization": "Bearer alice-token"}
@@ -111,6 +136,14 @@ class FakeTiger:
         self.rows.extend(readings)
         self.batches.append(len(readings))
         return len(readings)
+
+    def delete_sessions_readings(self, session_ids) -> int:
+        if self.fail:
+            raise RuntimeError("simulated Tiger Data outage")
+        ids = {str(s) for s in session_ids}
+        before = len(self.rows)
+        self.rows = [r for r in self.rows if str(r.session_id) not in ids]
+        return before - len(self.rows)
 
     def delete_session_readings(self, session_id) -> int:
         if self.fail:

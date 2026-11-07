@@ -456,3 +456,51 @@ def test_401_messages_tell_you_how_to_get_a_token(client):
 def test_root_explains_the_service_instead_of_a_bare_404(client):
     r = client.get("/")
     assert r.status_code == 200 and r.json()["service"] == "SharkByte API" and "Bearer" in r.json()["auth"]
+
+
+# ------------------------------------------------------------------ readiness
+
+
+def test_readiness_reports_both_databases_and_is_ok_when_they_are_up(store):
+    from tests.fakes import FakeTiger
+
+    with TestClient(create_app(store=store, auth=FakeAuth(), timeseries=FakeTiger())) as c:
+        r = c.get("/health/ready")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "supabase": "ok", "tiger_data": "ok", "sensor_writes": "healthy"}
+
+
+def test_tiger_data_being_down_or_absent_never_makes_the_instance_unready(store):
+    from tests.fakes import FakeTiger
+
+    down = FakeTiger()
+    down.fail = True
+    with TestClient(create_app(store=store, auth=FakeAuth(), timeseries=down)) as c:
+        r = c.get("/health/ready")
+    assert r.status_code == 200 and r.json()["tiger_data"] == "unavailable" and r.json()["status"] == "ok"
+    with TestClient(create_app(store=store, auth=FakeAuth(), timeseries=FakeTiger(configured=False))) as c:
+        assert c.get("/health/ready").json()["tiger_data"] == "not_configured"
+
+
+def test_supabase_being_down_makes_the_instance_unready_with_503(store):
+    store.ping_ok = False
+    with TestClient(create_app(store=store, auth=FakeAuth())) as c:
+        r = c.get("/health/ready")
+    assert r.status_code == 503 and r.json()["supabase"] == "unavailable" and r.json()["status"] == "unavailable"
+
+
+def test_readiness_is_cached_so_it_cannot_be_used_to_hammer_the_databases(store):
+    with TestClient(create_app(store=store, auth=FakeAuth())) as c:
+        for _ in range(25):
+            assert c.get("/health/ready").status_code == 200
+        assert store.ping_calls == 1  # 25 requests, one database check
+        c.app.state.ready_ttl_s = 0  # cache lifetime over
+        c.get("/health/ready")
+        assert store.ping_calls == 2
+
+
+def test_readiness_leaks_no_secrets_or_details(client):
+    body = json.dumps(client.get("/health/ready").json())
+    for forbidden in ("postgres", "supabase.co", "sb_", "password", "eyJ", "@"):
+        assert forbidden not in body
+    assert client.get("/health").json() == {"status": "ok"}  # liveness stays dependency-free

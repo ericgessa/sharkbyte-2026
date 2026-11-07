@@ -168,6 +168,12 @@ class CreateWorkoutRequest(_Strict):
             raise ValueError(str(exc)) from None
 
 
+class DeleteAccountRequest(_Strict):
+    """Deleting an account is irreversible, so the caller must type the confirmation phrase exactly."""
+
+    confirm: Literal["delete my account"]
+
+
 class RepOut(_Strict):
     rep_number: int
     metrics: dict[str, Any]

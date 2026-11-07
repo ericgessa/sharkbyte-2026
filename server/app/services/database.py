@@ -303,6 +303,31 @@ class SupabaseStore:
     def list_sessions(self, user_id: str, limit: int) -> list[dict[str, Any]]:
         return list_workout_sessions(user_id, limit, self.client)
 
+    def ping(self) -> bool:
+        """True if Supabase answers a trivial query (used by the readiness endpoint)."""
+        try:
+            self.client.table("exercises").select("id").limit(1).execute()
+            return True
+        except Exception:
+            return False
+
+    def list_all_session_ids(self, user_id: str) -> list[str]:
+        """Every workout id of a user (paged, no cap): needed to delete their sensor data on account deletion."""
+        out: list[str] = []
+        start = 0
+        while True:
+            rows = _rows(
+                self.client.table("workout_sessions").select("id").eq("user_id", str(user_id)).order("id").range(start, start + 999).execute()
+            )
+            out += [r["id"] for r in rows]
+            if len(rows) < 1000:
+                return out
+            start += 1000
+
+    def delete_account(self, user_id: str) -> None:
+        """Delete the Supabase Auth user. The database cascades: profile -> workouts -> reps and coaching events."""
+        self.client.auth.admin.delete_user(str(user_id))
+
     def delete_session(self, session_id: UUID, user_id: str) -> bool:
         return delete_workout_session(session_id, user_id, self.client)
 

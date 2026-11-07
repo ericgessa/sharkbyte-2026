@@ -41,11 +41,13 @@ The live ones use a throwaway user and clean up after themselves.
   relay, reconnect takeover, flood and size limits.
 * 7 exercises can be logged (squat, push-up, pull-up, deadlift, bench press, lunge, plank). **Only squat is analyzed**
   (reps counted, coached); the others are logged and their data recorded.
-* Workout history, per-workout summary, Tiger Data analytics, deleting a workout from both databases.
+* Workout history, per-workout summary, Tiger Data analytics, deleting a workout or a whole account from both databases.
+* An optional AI (LLM) coach layer that words the rule engine's feedback and writes workout recaps, with the rules as a
+  guaranteed fallback (`docs/AI_COACH.md`). Built and tested offline; **not yet run against a real model**; off by default.
 
 ## What does not (yet)
 
-* The LLM coach, analysis for the non-squat exercises, ESP32 firmware and sensor calibration, anything validated on
+* A verified live LLM run (needs a key), analysis for the non-squat exercises, ESP32 firmware and sensor calibration, anything validated on
   real recordings (the squat thresholds are untuned guesses), a hosted deployment.
 
 ## Docs
@@ -54,4 +56,5 @@ The live ones use a throwaway user and clean up after themselves.
 * `docs/event-contracts.md`: every REST endpoint and WebSocket message
 * `SUPABASE_SETUP.md`, `TIGERDATA_SETUP.md`: setting up the databases (with what is verified and what is not)
 * `docs/DEPLOYMENT.md`: running it somewhere other than a laptop
+* `docs/AI_COACH.md`: the LLM coach layer, its guardrails, and how to enable it
 * `docs/adding-an-exercise.md`, `AGENTS.md` (project spec and conventions)

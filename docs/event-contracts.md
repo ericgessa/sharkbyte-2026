@@ -17,6 +17,7 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 | GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
 | DELETE | `/api/workouts/{session_id}` | **Permanently** deletes the workout from both databases: its reps and coaching events (Supabase) and its sensor readings (Tiger Data). 204 on success; 404 if it is not yours or does not exist (so deleting twice is a 404); 503 if sensor data could not be deleted right now, in which case **nothing** was deleted and it is safe to retry. A socket that is still streaming that workout is closed with `4409`. There is no undo, so the app should confirm first |
 | GET | `/api/workouts/{session_id}/summary` | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far) |
+| GET | `/api/workouts/{session_id}/coach-summary` | 200 `{"summary": "<3-4 sentence recap>", "source": "agent"\|"rules"}`: a plain-language recap of the workout for the end-of-workout screen. `source: "rules"` is a deterministic recap (used when the AI coach is off, unavailable, or the user reported pain). Finished workouts are cached. At most ~6 per minute per user (429 beyond that) |
 | GET | `/api/workouts/{session_id}/analytics` | 200 compact analytics: `supabase` (rep stats, coaching events) + `timeseries` (SQL summaries from Tiger Data, per-rep depth/range trends). `timeseries.available` is `false` with a `reason` (`not_configured` / `unavailable`) when Tiger Data is off or down |
 | GET | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window |
 | POST | `/api/workouts/{session_id}/finish` | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry) |
@@ -216,7 +217,10 @@ Every signal is answered with a `session_state` message (below).
 }
 ```
 
-Currently a rule-based coach (`source: "rules"`; `"agent"` is reserved for the future LLM coach).
+`source` is `"rules"` (the deterministic coach's message) or `"agent"` (an LLM worded it; only when the server has the
+AI coach enabled, see `docs/AI_COACH.md`). Show `message` the same way either way. With the AI coach on, a cue may
+arrive a few seconds **after** its `rep_completed` (the model takes a moment, and the app keeps counting meanwhile),
+or not at all if the model judged it unhelpful. Never assume a cue is immediate.
 Issue codes: `reduced_depth` (last 2 reps clearly shallower than the median of the first 3),
 `asymmetry` (left/right knee angles differ a lot in 2 reps in a row). Feedback is rate-limited: none
 until 3 reps exist, at least 2 reps between messages, 4 reps before repeating an issue, max 6 per

@@ -44,6 +44,8 @@ class LiveSession:
     pending_writes: list[Write] = field(default_factory=list)
     # Background saves in flight; finishing waits for these so no rep is missed.
     save_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    # Coaching cues being worded by the LLM in the background (never awaited by finish: they just drop if too late).
+    agent_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     finished: bool = False
     paused: bool = False  # frames are ignored while paused
     pain_reported: bool = False
@@ -73,6 +75,9 @@ class LiveSessions:
 
     def remove(self, session_id: UUID) -> None:
         self._live.pop(session_id, None)
+
+    def for_user(self, user_id: str) -> list[LiveSession]:
+        return [s for s in self._live.values() if s.user_id == user_id]
 
     def __len__(self) -> int:
         return len(self._live)

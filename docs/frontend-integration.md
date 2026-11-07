@@ -141,6 +141,11 @@ so don't show a live rep counter or promise coaching for them; show something li
 and pause work for every exercise. Don't try to count reps client-side and send them: the API has no way to accept
 them. A wrong exercise name is a 422 whose message lists the valid ones.
 
+**End-of-workout recap.** `GET /api/workouts/{id}/coach-summary` returns `{ summary, source }`: a few plain sentences
+about the workout, ready to show under the stats. `source` is `"agent"` when an LLM wrote it and `"rules"` for the
+deterministic version (either is fine to show as-is). Call it once when the workout ends and cache it client-side; it is
+limited to about 6 requests per minute.
+
 Screens you can build from the other read endpoints (response shapes in [event-contracts.md](event-contracts.md)):
 
 ```ts
@@ -194,7 +199,9 @@ Rules that matter:
   of the two must be present. Don't guess angles for hidden joints.
 - `landmark_confidence` 0-1; below 0.6 the frame is ignored and you get one `tracking_status: lost`
   (then `recovered`). Use that to show "step back so we can see your legs".
-- Show `coaching_feedback.message` as-is (text and/or speech). It is rate-limited server-side.
+- Show `coaching_feedback.message` as-is (text and/or speech). It is rate-limited server-side. When the server's AI
+  coach is on, a cue can arrive a few seconds after its `rep_completed` (or not at all); don't wait for it before
+  updating the rep count.
 - **ESP32 data:** if the phone talks to the wearable over Bluetooth, forward each sample over this same socket
   (no separate endpoint or credentials): `ws.send(JSON.stringify({ schema_version: 1, type: 'sensor_update',
   session_id: sessionId, device_id: 'esp32-01', sequence: n++, timestamp_ms: deviceMillis, data: { flex_raw, imu_pitch_deg } }))`.

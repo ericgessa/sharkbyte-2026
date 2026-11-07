@@ -201,3 +201,108 @@ def test_a_connection_older_than_the_limit_is_closed_so_the_app_reconnects_and_r
     with client.websocket_connect(f"/ws/workouts/{sid}") as ws:  # reconnecting is seamless
         ws.send_text(json.dumps(auth_message()))
         assert ws.receive_json()["type"] == "session_ready"
+
+
+# ---- deleting a whole account ------------------------------------------------
+
+CONFIRM = {"confirm": "delete my account"}
+
+
+def delete_account(client, body=CONFIRM, headers=ALICE):
+    return client.post("/api/account/delete", json=body, headers=headers)
+
+
+def test_account_deletion_requires_the_exact_confirmation_phrase(client, store):
+    new_session(client)
+    for body in ({}, {"confirm": "yes"}, {"confirm": "Delete My Account"}, {"confirm": "delete my account", "x": 1}, None):
+        r = client.post("/api/account/delete", json=body, headers=ALICE) if body is not None else client.post("/api/account/delete", headers=ALICE)
+        assert r.status_code == 422, body
+    assert delete_account(client, headers={}).status_code == 401
+    assert store.list_all_session_ids("user-alice") and not getattr(store, "deleted_users", [])  # nothing happened
+
+
+def test_deleting_an_account_removes_everything_of_that_user_and_only_that_user(client, store, tiger):
+    a1, a2 = new_session(client), new_session(client)
+    b1 = new_session(client, BOB)
+    stream(client, a1, tiger=tiger)
+    stream(client, a2, tiger=tiger)
+    with client.websocket_connect(f"/ws/workouts/{b1}") as ws:  # Bob streams too, with his own token
+        ws.send_text(json.dumps(auth_message("bob-token")))
+        ws.receive_json()
+        for m in squat_messages(b1, reps=1):
+            ws.send_text(json.dumps(m))
+        ws.receive_json()
+        assert wait_for(lambda: any(str(r.session_id) == b1 for r in tiger.rows))
+    assert wait_for(lambda: len(store.reps.get(a1, {})) == 2 and len(store.reps.get(a2, {})) == 2)
+
+    r = delete_account(client)
+    assert r.status_code == 204 and r.content == b""
+
+    assert store.deleted_users == ["user-alice"]
+    assert store.list_all_session_ids("user-alice") == [] and a1 not in store.sessions and a2 not in store.reps
+    assert not any(str(x.session_id) in (a1, a2) for x in tiger.rows)  # Alice's sensor data is gone too
+    assert b1 in store.sessions and any(str(x.session_id) == b1 for x in tiger.rows)  # Bob is untouched
+    assert client.get("/api/workouts", headers=BOB).status_code == 200
+
+
+def test_the_deleted_users_token_stops_working_immediately(client):
+    new_session(client)
+    assert client.get("/api/workouts", headers=ALICE).status_code == 200
+    assert delete_account(client).status_code == 204
+    assert client.app.state.auth.invalidated == ["user-alice"]
+    assert client.get("/api/workouts", headers=ALICE).status_code == 401  # not "after the cache expires"
+
+
+def test_deleting_an_account_closes_a_workout_that_is_streaming(client, tiger):
+    sid = new_session(client)
+    with client.websocket_connect(f"/ws/workouts/{sid}") as ws:
+        ws.send_text(json.dumps(auth_message()))
+        ws.receive_json()
+        for m in squat_messages(sid, reps=1):
+            ws.send_text(json.dumps(m))
+        ws.receive_json()
+        assert delete_account(client).status_code == 204
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4409
+    time.sleep(0.3)
+    assert not any(str(r.session_id) == sid for r in tiger.rows)
+    assert client.app.state.live.get(UUID(sid)) is None
+
+
+def test_if_tiger_data_is_down_the_account_is_not_deleted_and_can_be_retried(client, store, tiger):
+    sid = new_session(client)
+    stream(client, sid, tiger=tiger)
+    tiger.fail = True
+    r = delete_account(client)
+    assert r.status_code == 503 and "nothing was deleted" in r.json()["detail"]
+    assert sid in store.sessions and not getattr(store, "deleted_users", [])  # account and workouts intact
+    assert client.get("/api/workouts", headers=ALICE).status_code == 200  # still logged in
+    with client.websocket_connect(f"/ws/workouts/{sid}") as ws:  # and the workout still works
+        ws.send_text(json.dumps(auth_message()))
+        ws.receive_json()
+        ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": sid, "signal": "pause"}))
+        assert ws.receive_json()["type"] == "session_state"
+    tiger.fail = False
+    assert delete_account(client).status_code == 204
+    assert sid not in store.sessions and store.deleted_users == ["user-alice"]
+
+
+def test_if_the_supabase_step_fails_after_sensor_data_is_deleted_the_user_is_told_and_can_retry(client, store, tiger):
+    sid = new_session(client)
+    stream(client, sid, tiger=tiger)
+    store.fail_account_delete = True
+    r = delete_account(client)
+    assert r.status_code == 503 and "sensor data was deleted but the account could not be removed" in r.json()["detail"]
+    assert not any(str(x.session_id) == sid for x in tiger.rows)  # no orphaned sensor data in either outcome
+    store.fail_account_delete = False
+    assert delete_account(client).status_code == 204 and store.deleted_users == ["user-alice"]
+
+
+def test_account_deletion_works_without_tiger_data_and_for_a_user_with_no_workouts(store):
+    off = FakeTiger(configured=False)
+    with TestClient(create_app(store=store, auth=FakeAuth(), timeseries=off)) as c:
+        new_session(c)
+        assert delete_account(c).status_code == 204
+        assert delete_account(c, headers=BOB).status_code == 204  # Bob never made a workout
+    assert store.deleted_users == ["user-alice", "user-bob"]
