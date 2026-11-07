@@ -15,8 +15,12 @@ from app.api import routes, websocket
 from app.services.auth import SupabaseAuth
 from app.services.database import DatabaseConfigError, SupabaseStore
 from app.services.ingest import SensorIngestor
+from app.services.ratelimit import KeyedLimiter
 from app.services.session_manager import DEFAULT_IDLE_TTL_S, DEFAULT_SWEEP_INTERVAL_S, LiveSessions, sweep_loop
 from app.services.timeseries import TigerStore
+
+REST_RATE_PER_S, REST_BURST = 10.0, 60  # any /api call, per user
+CREATE_RATE_PER_S, CREATE_BURST = 20 / 60, 10  # starting workouts, per user (20 per minute sustained)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # one INFO line per Supabase call is too noisy
@@ -69,7 +73,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
         allow_credentials=False,
     )
@@ -78,6 +82,10 @@ def create_app(
     app.state.tiger = tiger
     app.state.ingest = ingestor
     app.state.live = LiveSessions()
+    # Per-user request limits (generous for a real app; stops a runaway client or a script from hammering the
+    # backend and, through it, Supabase). Tests and deployments can replace these on app.state.
+    app.state.rest_limiter = KeyedLimiter(rate_per_s=REST_RATE_PER_S, burst=REST_BURST)
+    app.state.create_limiter = KeyedLimiter(rate_per_s=CREATE_RATE_PER_S, burst=CREATE_BURST)
 
     @app.exception_handler(DatabaseConfigError)
     async def _db_not_configured(_: Request, exc: DatabaseConfigError) -> JSONResponse:

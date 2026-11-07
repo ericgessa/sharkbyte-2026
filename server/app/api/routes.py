@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Annotated, Any
 from uuid import UUID
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from app.schemas.events import CreateWorkoutRequest, StatsOut, WorkoutOut, WorkoutSummaryOut
 from app.services import persistence
@@ -42,6 +43,11 @@ def current_user_id(request: Request, authorization: Annotated[str | None, Heade
             "invalid or expired token: use the user's Supabase access_token (not the publishable key); "
             "re-read it with supabase.auth.getSession() because it expires after about an hour",
             {"WWW-Authenticate": "Bearer"},
+        )
+    limiter = getattr(request.app.state, "rest_limiter", None)
+    if limiter is not None and not limiter.allow(user_id):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "too many requests; slow down", {"Retry-After": str(limiter.retry_after_s)}
         )
     return user_id
 
@@ -106,6 +112,11 @@ def health() -> dict[str, str]:
 
 @router.post("/api/workouts", response_model=WorkoutOut, status_code=status.HTTP_201_CREATED)
 def create_workout(body: CreateWorkoutRequest, request: Request, user_id: UserId) -> WorkoutOut:
+    limiter = getattr(request.app.state, "create_limiter", None)
+    if limiter is not None and not limiter.allow(user_id):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "too many workouts started; slow down", {"Retry-After": str(limiter.retry_after_s)}
+        )
     row = request.app.state.store.create_session(user_id, body.exercise)
     logger.info("session created id=%s user=%s", row["id"], user_id)
     return to_out(row)
@@ -117,6 +128,46 @@ def list_workouts(request: Request, user_id: UserId, limit: Annotated[int, Query
     live = request.app.state.live
     rows = request.app.state.store.list_sessions(user_id, limit)
     return [to_out(r, live.get(UUID(str(r["id"])))) for r in rows]
+
+
+@router.delete("/api/workouts/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_workout(session_id: UUID, request: Request, user_id: UserId) -> Response:
+    """Permanently delete one of your workouts from BOTH databases.
+
+    Supabase: the session, its reps and its coaching events. Tiger Data: its sensor readings (a separate
+    database that does not cascade, so it is deleted explicitly, FIRST). If Tiger Data is configured but
+    cannot be reached, nothing is deleted and you get a 503 to retry, so sensor data is never left behind
+    with its workout gone. 404 if the workout is not yours (same as if it does not exist). 204 on success.
+    """
+    state = request.app.state
+    await asyncio.to_thread(_owned_session, request, session_id, user_id)
+
+    live = state.live.get(session_id)
+    if live is not None:
+        live.finished = True  # a still-open socket stops adding data to a workout being deleted
+        if live.socket is not None:
+            with contextlib.suppress(Exception):
+                await live.socket.close(code=4409)
+        if live.save_tasks:
+            await asyncio.gather(*live.save_tasks, return_exceptions=True)
+
+    if state.tiger.configured:
+        try:
+            if not await state.ingest.flush(timeout_s=5.0):  # nothing may land in Tiger Data after we delete
+                raise RuntimeError("buffered readings could not be flushed")
+            await asyncio.to_thread(state.tiger.delete_session_readings, session_id)
+        except Exception:
+            if live is not None:
+                live.finished = False  # nothing was deleted: the workout stays usable
+            logger.warning("delete of workout %s aborted: Tiger Data unavailable", session_id)
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "could not delete the sensor data right now; nothing was deleted, try again"
+            ) from None
+
+    await asyncio.to_thread(state.store.delete_session, session_id, user_id)  # cascades to reps + coaching events
+    state.live.remove(session_id)
+    logger.info("workout deleted id=%s user=%s", session_id, user_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/api/workouts/{session_id}/analytics")

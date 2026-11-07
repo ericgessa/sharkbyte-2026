@@ -165,6 +165,17 @@ def list_workout_sessions(
     )
 
 
+def delete_workout_session(session_id: UUID | str, user_id: UUID | str, client: Client | None = None) -> bool:
+    """Delete one of ``user_id``'s sessions. Reps and coaching events go with it (ON DELETE CASCADE).
+
+    Returns False if no such session belongs to the user. The caller must also delete the session's
+    Tiger Data readings: that database is separate and does not cascade.
+    """
+    db = client or get_client()
+    rows = _rows(db.table("workout_sessions").delete().eq("id", str(session_id)).eq("user_id", str(user_id)).execute())
+    return bool(rows)
+
+
 def list_repetitions(session_id: UUID | str, client: Client | None = None) -> list[dict[str, Any]]:
     """Saved reps of a session in order. Caller must have verified ownership."""
     db = client or get_client()
@@ -291,6 +302,9 @@ class SupabaseStore:
 
     def list_sessions(self, user_id: str, limit: int) -> list[dict[str, Any]]:
         return list_workout_sessions(user_id, limit, self.client)
+
+    def delete_session(self, session_id: UUID, user_id: str) -> bool:
+        return delete_workout_session(session_id, user_id, self.client)
 
     def list_repetitions(self, session_id: UUID) -> list[dict[str, Any]]:
         return list_repetitions(session_id, self.client)

@@ -160,6 +160,22 @@ class TigerStore:
         except Exception as exc:  # psycopg.Error, PoolTimeout, ...
             raise TigerDataError(f"insert failed: {type(exc).__name__}") from None
 
+    def delete_session_readings(self, session_id: Any) -> int:
+        """Delete every reading of one workout. Returns the number of rows removed.
+
+        Supabase deletes cascade to reps and coaching events, but Tiger Data is a separate database with no
+        foreign key, so deleting a workout or an account MUST also call this (privacy: no orphaned sensor data).
+        """
+        try:
+            with self._get_pool().connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("delete from sensor_readings where session_id = %s", (session_id,))
+                    return max(cur.rowcount, 0)
+        except TigerDataConfigError:
+            raise
+        except Exception as exc:
+            raise TigerDataError(f"delete failed: {type(exc).__name__}") from None
+
     # ------------------------------------------------------------------ reads
 
     def query(self, sql: str, params: Any = None, timeout_ms: int = DEFAULT_QUERY_TIMEOUT_MS) -> list[dict[str, Any]]:

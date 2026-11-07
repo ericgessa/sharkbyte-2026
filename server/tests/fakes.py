@@ -30,6 +30,15 @@ class InMemoryStore:
         row = self.sessions.get(str(session_id))
         return dict(row) if row and row["user_id"] == user_id else None
 
+    def delete_session(self, session_id, user_id: str) -> bool:
+        row = self.sessions.get(str(session_id))
+        if not row or row["user_id"] != user_id:
+            return False
+        del self.sessions[str(session_id)]  # cascade, like Postgres
+        self.reps.pop(str(session_id), None)
+        self.events.pop(str(session_id), None)
+        return True
+
     def list_sessions(self, user_id: str, limit: int) -> list[dict]:
         rows = [dict(r) for r in self.sessions.values() if r["user_id"] == user_id]
         return sorted(rows, key=lambda r: r["started_at"], reverse=True)[:limit]
@@ -102,6 +111,13 @@ class FakeTiger:
         self.rows.extend(readings)
         self.batches.append(len(readings))
         return len(readings)
+
+    def delete_session_readings(self, session_id) -> int:
+        if self.fail:
+            raise RuntimeError("simulated Tiger Data outage")
+        before = len(self.rows)
+        self.rows = [r for r in self.rows if str(r.session_id) != str(session_id)]
+        return before - len(self.rows)
 
     def query(self, sql, params=None, timeout_ms=10_000):
         if self.fail:

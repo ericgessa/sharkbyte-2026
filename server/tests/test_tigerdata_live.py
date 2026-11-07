@@ -202,3 +202,16 @@ def test_coach_context_end_to_end_with_both_databases(tiger, sid):
     assert ts["available"] is True and ts["knee_angle"]["min_deg"] == 85.0
     assert ts["rep_trends"]["depth_trend_deg_per_rep"] == pytest.approx(5.0, abs=0.01)
     assert ts["overview"]["readings"] == len(readings)
+
+
+def test_delete_session_readings_removes_only_that_workout(tiger, sid):
+    readings, _ = build_workout(sid)
+    tiger.insert_readings(readings)
+    other = uuid4()
+    other_rows = [SensorReading(time=BASE, session_id=other, source="imu", metric_name="imu_pitch", metric_value=1.0)]
+    tiger.insert_readings(other_rows)
+    try:
+        assert tiger.delete_session_readings(sid) == len(readings)
+        assert count(sid) == 0 and count(other) == 1  # the neighbour is untouched
+    finally:
+        tiger.delete_session_readings(other)

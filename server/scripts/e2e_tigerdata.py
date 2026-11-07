@@ -30,6 +30,7 @@ from app.services import analytics
 from app.services.database import DatabaseConfigError, get_client
 from app.services.timeseries import TigerDataConfigError, TigerStore, tigerdata_url
 from app.simulation import squat_messages
+from scripts._cleanup import arm_watchdog, purge_tiger_readings
 
 REPS = 5
 results: list[tuple[str, bool]] = []
@@ -65,6 +66,7 @@ def main() -> int:
     email, password = f"tiger-e2e-{uuid4().hex[:10]}@example.com", secrets.token_urlsafe(24)
     user = admin.auth.admin.create_user({"email": email, "password": password, "email_confirm": True}).user
     sid = None
+    watchdog = arm_watchdog(240, lambda: (purge_tiger_readings([sid] if sid else []), admin.auth.admin.delete_user(user.id)))
     try:
         key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "").strip()
         if not key or key.startswith("your-"):
@@ -129,6 +131,7 @@ def main() -> int:
                               "depth_trend_deg_per_rep": trends.get("depth_trend_deg_per_rep"),
                               "range_trend_deg_per_rep": trends.get("range_trend_deg_per_rep")}, indent=2))
     finally:
+        watchdog.cancel()
         if keep and sid:
             print(f"\n--keep: data left in place. Session {sid}  (user {user.id}, email {email})")
             print(f"Inspect: python -m scripts.check_tigerdata --session {sid}")

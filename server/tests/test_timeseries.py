@@ -234,3 +234,19 @@ def test_diagnose_connection_ok(monkeypatch):
 
     monkeypatch.setattr(psycopg, "connect", lambda *a, **k: C())
     assert ts.diagnose_connection() == "ok"
+
+
+# ---- deleting a workout's readings (privacy: Tiger Data has no cascade from Supabase) -------
+
+
+def test_delete_session_readings_deletes_only_that_session_with_a_parameter():
+    conn = FakeConn()
+    store_with(FakePool(conn)).delete_session_readings(SID)
+    ((sql, params),) = conn.executed
+    assert sql == "delete from sensor_readings where session_id = %s" and params == (SID,)  # one session, as a parameter
+
+
+def test_delete_failure_is_wrapped_without_connection_details():
+    with pytest.raises(ts.TigerDataError) as exc:
+        store_with(FakePool(error=ConnectionError(SECRET_URL))).delete_session_readings(SID)
+    assert "S3cr3tPassw0rd" not in str(exc.value)

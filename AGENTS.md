@@ -39,6 +39,7 @@ server/
   app/api/websocket.py
   app/schemas/events.py
   app/services/session_manager.py   in-memory for now
+  app/services/ratelimit.py         token bucket + per-user limiter (REST and WebSocket limits)
   app/services/exercises.py         exercise registry (one place to add an exercise; see docs/adding-an-exercise.md)
   app/services/rep_counter.py
   app/simulation.py                 simulated pose data for tests/demo

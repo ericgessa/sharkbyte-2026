@@ -15,6 +15,7 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 | POST | `/api/workouts` | body `{"exercise":"<any spelling>"}` (optional; defaults to `"squat"`) → 201 `WorkoutOut`. Unknown exercise → 422 listing the supported ones |
 | GET | `/api/workouts?limit=20` | 200 list of your `WorkoutOut`, newest first (`limit` 1-100) |
 | GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
+| DELETE | `/api/workouts/{session_id}` | **Permanently** deletes the workout from both databases: its reps and coaching events (Supabase) and its sensor readings (Tiger Data). 204 on success; 404 if it is not yours or does not exist (so deleting twice is a 404); 503 if sensor data could not be deleted right now, in which case **nothing** was deleted and it is safe to retry. A socket that is still streaming that workout is closed with `4409`. There is no undo, so the app should confirm first |
 | GET | `/api/workouts/{session_id}/summary` | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far) |
 | GET | `/api/workouts/{session_id}/analytics` | 200 compact analytics: `supabase` (rep stats, coaching events) + `timeseries` (SQL summaries from Tiger Data, per-rep depth/range trends). `timeseries.available` is `false` with a `reason` (`not_configured` / `unavailable`) when Tiger Data is off or down |
 | GET | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window |
@@ -62,6 +63,10 @@ them from (no reps; `depth_change_deg` needs at least 4 reps).
 from Supabase Auth sign-in). Missing/invalid → 401. A session that belongs to another user returns 404,
 same as one that doesn't exist.
 
+**Request limits.** Each user may make about 10 `/api/*` requests per second sustained (burst 60), and start about
+20 workouts per minute (burst 10). Beyond that you get `429 too many requests` with a `Retry-After` header (seconds);
+wait that long and retry. Real app usage is far below these. `/health`, `/` and `/api/exercises` are not limited.
+
 Sessions, reps and totals are stored in Supabase. `total_reps` on finish is the number of repetition rows
 actually saved. Starting a workout does not require the WebSocket to stay connected: if the socket drops,
 reconnect and the rep count continues from what was saved.
@@ -80,7 +85,7 @@ Otherwise the server closes the socket with an application close code:
 
 | Code | Meaning |
 | --- | --- |
-| 4401 | first message missing/not `auth`, bad or expired token, or timeout |
+| 4401 | first message missing/not `auth`, bad or expired token, or timeout. Also sent on a healthy connection that has been open for **3 hours**, so the server re-checks the login: refresh the token (`supabase.auth.getSession()`) and reconnect; the workout continues where it was |
 | 4404 | session doesn't exist **or belongs to someone else** |
 | 4409 | session is already completed (or was finished while streaming) |
 | 4410 | a newer connection took this session over (see below). Don't reconnect automatically on this code |

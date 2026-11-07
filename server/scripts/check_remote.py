@@ -28,6 +28,7 @@ from websockets.sync.client import connect
 
 from app.services.database import DatabaseConfigError, get_client
 from app.simulation import squat_messages
+from scripts._cleanup import purge_tiger_readings
 
 REPS = 5
 results: list[tuple[str, bool]] = []
@@ -61,6 +62,7 @@ def main() -> int:
 
     email, password = f"mobile-check-{uuid4().hex[:10]}@example.com", secrets.token_urlsafe(24)
     user = admin.auth.admin.create_user({"email": email, "password": password, "email_confirm": True}).user
+    created: list[str] = []  # workouts whose Tiger Data readings must be cleaned up
     print(f"created throwaway user {user.id}")
     try:
         # 2) Sign in the way the app does (public client key; falls back to the secret key if unset).
@@ -77,6 +79,7 @@ def main() -> int:
         r = httpx.post(f"{base}/api/workouts", json={"exercise": "squat"}, headers=auth, timeout=15)
         check("POST /api/workouts (201)", r.status_code == 201, f"HTTP {r.status_code} {r.text[:120]}")
         sid = r.json()["session_id"]
+        created.append(sid)
 
         # 4) WebSocket as the app would use it
         with connect(f"{ws_base}/ws/workouts/{sid}", open_timeout=10) as ws:
@@ -102,6 +105,7 @@ def main() -> int:
 
         # 6) The safety button: pain -> stop message, coaching turned off
         sid2 = httpx.post(f"{base}/api/workouts", json={"exercise": "squat"}, headers=auth, timeout=15).json()["session_id"]
+        created.append(sid2)
         with connect(f"{ws_base}/ws/workouts/{sid2}", open_timeout=10) as ws:
             ws.send(json.dumps({"schema_version": 1, "type": "auth", "access_token": token}))
             ws.recv(timeout=15)
@@ -113,6 +117,7 @@ def main() -> int:
         )
         httpx.post(f"{base}/api/workouts/{sid2}/finish", headers=auth, timeout=20)
     finally:
+        purge_tiger_readings(created, settle_s=2.0)  # the server flushes readings ~1 s after the last frame
         admin.auth.admin.delete_user(user.id)
         time.sleep(0.3)
         print("deleted throwaway user")
