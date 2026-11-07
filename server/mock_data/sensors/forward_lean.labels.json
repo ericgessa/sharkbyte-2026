@@ -1,0 +1,72 @@
+{
+  "simulated": true,
+  "scenario": "forward_lean",
+  "description": "Chest drops well forward at the bottom of every rep (about 62 deg).",
+  "expected_issues": [
+    "excessive_forward_lean"
+  ],
+  "assumptions": {
+    "placement": "one ESP32 + IMU flat on the upper back, between the shoulder blades",
+    "imu_pitch_deg": "forward lean of the upper torso from vertical, + = forward (hip hinge and rounding combined)",
+    "imu_roll_deg": "sideways tilt, + = toward the user's right",
+    "accel_g": "device frame: z up the spine, x out of the chest, y toward the user's left; 1 g at rest",
+    "not_simulated": "flex sensor, yaw, sensor calibration, real noise characteristics"
+  },
+  "generator": {
+    "seed": 0,
+    "reps": 5,
+    "rate_hz": 50,
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "device_id": "esp32-01"
+  },
+  "message_count": 887,
+  "times": "device clock ms, the same clock as each message's timestamp_ms",
+  "reps": [
+    {
+      "rep_number": 1,
+      "start_ms": 3294731,
+      "bottom_ms": 3295889,
+      "end_ms": 3297048,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 62.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 2,
+      "start_ms": 3298048,
+      "bottom_ms": 3299225,
+      "end_ms": 3300402,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 62.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 3,
+      "start_ms": 3301402,
+      "bottom_ms": 3302589,
+      "end_ms": 3303775,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 62.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 4,
+      "start_ms": 3304775,
+      "bottom_ms": 3305967,
+      "end_ms": 3307160,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 62.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 5,
+      "start_ms": 3308160,
+      "bottom_ms": 3309315,
+      "end_ms": 3310470,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 62.0,
+      "bottom_roll_deg": 0.0
+    }
+  ],
+  "dropouts": []
+}

@@ -1,0 +1,72 @@
+{
+  "simulated": true,
+  "scenario": "lateral_shift",
+  "description": "Good lean, but the shoulders tilt about 8 deg to the right at the bottom of every rep.",
+  "expected_issues": [
+    "lateral_shift"
+  ],
+  "assumptions": {
+    "placement": "one ESP32 + IMU flat on the upper back, between the shoulder blades",
+    "imu_pitch_deg": "forward lean of the upper torso from vertical, + = forward (hip hinge and rounding combined)",
+    "imu_roll_deg": "sideways tilt, + = toward the user's right",
+    "accel_g": "device frame: z up the spine, x out of the chest, y toward the user's left; 1 g at rest",
+    "not_simulated": "flex sensor, yaw, sensor calibration, real noise characteristics"
+  },
+  "generator": {
+    "seed": 0,
+    "reps": 5,
+    "rate_hz": 50,
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "device_id": "esp32-01"
+  },
+  "message_count": 900,
+  "times": "device clock ms, the same clock as each message's timestamp_ms",
+  "reps": [
+    {
+      "rep_number": 1,
+      "start_ms": 4035062,
+      "bottom_ms": 4036234,
+      "end_ms": 4037407,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 8.0
+    },
+    {
+      "rep_number": 2,
+      "start_ms": 4038407,
+      "bottom_ms": 4039624,
+      "end_ms": 4040840,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 8.0
+    },
+    {
+      "rep_number": 3,
+      "start_ms": 4041840,
+      "bottom_ms": 4042992,
+      "end_ms": 4044145,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 8.0
+    },
+    {
+      "rep_number": 4,
+      "start_ms": 4045145,
+      "bottom_ms": 4046344,
+      "end_ms": 4047542,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 8.0
+    },
+    {
+      "rep_number": 5,
+      "start_ms": 4048542,
+      "bottom_ms": 4049800,
+      "end_ms": 4051059,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 8.0
+    }
+  ],
+  "dropouts": []
+}

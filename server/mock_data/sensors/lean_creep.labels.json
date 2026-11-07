@@ -1,0 +1,72 @@
+{
+  "simulated": true,
+  "scenario": "lean_creep",
+  "description": "Fatigue: each rep leans further forward (40 -> 60 deg) and gets slower (2.4 -> 3.1 s).",
+  "expected_issues": [
+    "forward_lean_increasing"
+  ],
+  "assumptions": {
+    "placement": "one ESP32 + IMU flat on the upper back, between the shoulder blades",
+    "imu_pitch_deg": "forward lean of the upper torso from vertical, + = forward (hip hinge and rounding combined)",
+    "imu_roll_deg": "sideways tilt, + = toward the user's right",
+    "accel_g": "device frame: z up the spine, x out of the chest, y toward the user's left; 1 g at rest",
+    "not_simulated": "flex sensor, yaw, sensor calibration, real noise characteristics"
+  },
+  "generator": {
+    "seed": 0,
+    "reps": 5,
+    "rate_hz": 50,
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "device_id": "esp32-01"
+  },
+  "message_count": 984,
+  "times": "device clock ms, the same clock as each message's timestamp_ms",
+  "reps": [
+    {
+      "rep_number": 1,
+      "start_ms": 4754421,
+      "bottom_ms": 4755621,
+      "end_ms": 4756820,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 2,
+      "start_ms": 4757820,
+      "bottom_ms": 4759119,
+      "end_ms": 4760417,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 45.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 3,
+      "start_ms": 4761417,
+      "bottom_ms": 4762822,
+      "end_ms": 4764227,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 50.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 4,
+      "start_ms": 4765227,
+      "bottom_ms": 4766667,
+      "end_ms": 4768107,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 55.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 5,
+      "start_ms": 4769107,
+      "bottom_ms": 4770599,
+      "end_ms": 4772090,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 60.0,
+      "bottom_roll_deg": 0.0
+    }
+  ],
+  "dropouts": []
+}

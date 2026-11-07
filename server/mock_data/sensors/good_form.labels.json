@@ -1,0 +1,70 @@
+{
+  "simulated": true,
+  "scenario": "good_form",
+  "description": "Upright between reps, moderate forward lean at the bottom (about 40 deg), level shoulders.",
+  "expected_issues": [],
+  "assumptions": {
+    "placement": "one ESP32 + IMU flat on the upper back, between the shoulder blades",
+    "imu_pitch_deg": "forward lean of the upper torso from vertical, + = forward (hip hinge and rounding combined)",
+    "imu_roll_deg": "sideways tilt, + = toward the user's right",
+    "accel_g": "device frame: z up the spine, x out of the chest, y toward the user's left; 1 g at rest",
+    "not_simulated": "flex sensor, yaw, sensor calibration, real noise characteristics"
+  },
+  "generator": {
+    "seed": 0,
+    "reps": 5,
+    "rate_hz": 50,
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "device_id": "esp32-01"
+  },
+  "message_count": 890,
+  "times": "device clock ms, the same clock as each message's timestamp_ms",
+  "reps": [
+    {
+      "rep_number": 1,
+      "start_ms": 1691936,
+      "bottom_ms": 1693146,
+      "end_ms": 1694357,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 2,
+      "start_ms": 1695357,
+      "bottom_ms": 1696498,
+      "end_ms": 1697640,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 3,
+      "start_ms": 1698640,
+      "bottom_ms": 1699861,
+      "end_ms": 1701082,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 4,
+      "start_ms": 1702082,
+      "bottom_ms": 1703232,
+      "end_ms": 1704383,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 5,
+      "start_ms": 1705383,
+      "bottom_ms": 1706559,
+      "end_ms": 1707735,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    }
+  ],
+  "dropouts": []
+}

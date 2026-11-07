@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -142,6 +143,28 @@ def test_fake_llm_runs_the_whole_flow_offline():
     assert out.source == "agent" and out.message == f"Coach: {d.message}"
 
 
+def test_debug_lines_show_the_request_and_the_reply(caplog):
+    caplog.set_level(logging.DEBUG, logger="app.services.ai_coach")
+    _phrase(AICoach(ScriptedLLM(_reply("Keep your chest up tall."))), _decision("forward_lean"))
+    assert "-> ScriptedLLM request" in caplog.text
+    assert '"issue": "excessive_forward_lean"' in caplog.text
+    assert "<- ScriptedLLM reply" in caplog.text
+    assert "Keep your chest up tall." in caplog.text
+
+
+def test_debug_lines_truncate_long_text(caplog):
+    caplog.set_level(logging.DEBUG, logger="app.services.ai_coach")
+    _phrase(AICoach(ScriptedLLM(_reply("x" * 5000))), _decision("forward_lean"))
+    reply_line = next(r.getMessage() for r in caplog.records if "reply in" in r.getMessage())
+    assert "[+" in reply_line and len(reply_line) < 1000
+
+
+def test_no_debug_lines_by_default(caplog):
+    caplog.set_level(logging.INFO, logger="app.services.ai_coach")
+    _phrase(AICoach(ScriptedLLM(_reply("Keep your chest up tall."))), _decision("forward_lean"))
+    assert "request" not in caplog.text
+
+
 def test_gemini_needs_a_key(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(MissingApiKey):
@@ -183,3 +206,16 @@ def test_gemini_request_shape(monkeypatch):
     assert cfg.response_mime_type == "application/json"
     assert cfg.response_json_schema == {"type": "object"}
     assert cfg.thinking_config.thinking_level == types.ThinkingLevel.LOW
+
+
+def test_api_deadline_is_never_below_the_10s_minimum():
+    """Gemini rejects server deadlines under 10 s (400 INVALID_ARGUMENT); our 4 s limit is enforced client side."""
+    pytest.importorskip("google.genai", minversion="3.0")
+    assert GeminiLLM(api_key="test-key", timeout_s=4).http_timeout_ms == 10_000
+    assert GeminiLLM(api_key="test-key", timeout_s=15).http_timeout_ms == 15_000
+
+
+def test_fallback_reason_includes_the_error_message():
+    coach = AICoach(ScriptedLLM(raises=RuntimeError("400 INVALID_ARGUMENT: bad deadline")))
+    _phrase(coach, _decision("forward_lean"))
+    assert coach.last_fallback_reason == "RuntimeError: 400 INVALID_ARGUMENT: bad deadline"
