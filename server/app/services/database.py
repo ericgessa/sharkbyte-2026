@@ -133,10 +133,34 @@ def list_workout_sessions(
     db = client or get_client()
     return _rows(
         db.table("workout_sessions")
-        .select("*")
+        .select("*, exercises(name)")
         .eq("user_id", str(user_id))
         .order("started_at", desc=True)
         .limit(limit)
+        .execute()
+    )
+
+
+def list_repetitions(session_id: UUID | str, client: Client | None = None) -> list[dict[str, Any]]:
+    """Saved reps of a session in order. Caller must have verified ownership."""
+    db = client or get_client()
+    return _rows(
+        db.table("repetitions")
+        .select("rep_number, metrics, form_score, created_at")
+        .eq("session_id", str(session_id))
+        .order("rep_number")
+        .execute()
+    )
+
+
+def list_coaching_events(session_id: UUID | str, client: Client | None = None) -> list[dict[str, Any]]:
+    """Coaching events of a session in time order. Caller must have verified ownership."""
+    db = client or get_client()
+    return _rows(
+        db.table("coaching_events")
+        .select("rep_number, issue_code, message, action, created_at")
+        .eq("session_id", str(session_id))
+        .order("created_at")
         .execute()
     )
 
@@ -237,6 +261,15 @@ class SupabaseStore:
 
     def get_session(self, session_id: UUID, user_id: str) -> dict[str, Any] | None:
         return get_workout_session(session_id, user_id, self.client)
+
+    def list_sessions(self, user_id: str, limit: int) -> list[dict[str, Any]]:
+        return list_workout_sessions(user_id, limit, self.client)
+
+    def list_repetitions(self, session_id: UUID) -> list[dict[str, Any]]:
+        return list_repetitions(session_id, self.client)
+
+    def list_coaching_events(self, session_id: UUID) -> list[dict[str, Any]]:
+        return list_coaching_events(session_id, self.client)
 
     def save_repetition(self, session_id: UUID, rep_number: int, metrics: dict[str, Any]) -> None:
         save_repetition(session_id, rep_number, metrics, client=self.client)

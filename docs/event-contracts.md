@@ -12,12 +12,37 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 | --- | --- | --- |
 | GET | `/health` | `{"status":"ok"}` (no auth) |
 | POST | `/api/workouts` | body `{"exercise":"squat"}` → 201 `WorkoutOut` |
+| GET | `/api/workouts?limit=20` | 200 list of your `WorkoutOut`, newest first (`limit` 1-100) |
 | GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
+| GET | `/api/workouts/{session_id}/summary` | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far) |
 | POST | `/api/workouts/{session_id}/finish` | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry) |
 
 `WorkoutOut`: `session_id`, `exercise`, `status` (`active`\|`completed`), `started_at`, `ended_at`
 (null while active), `total_reps`, `dropped_frames`, `aborted_attempts` (the last two are live
 counters, 0 when the session isn't streaming).
+
+`WorkoutSummaryOut` (for the end-of-workout and history screens):
+
+```json
+{
+  "workout": { "...": "a WorkoutOut" },
+  "stats": {
+    "rep_count": 5,
+    "avg_min_knee_angle_deg": 87.6,
+    "deepest_knee_angle_deg": 85.0,
+    "shallowest_knee_angle_deg": 98.0,
+    "depth_change_deg": 8.7,
+    "avg_rep_duration_ms": 1716,
+    "max_asymmetry_deg": 2.0
+  },
+  "reps": [{ "rep_number": 1, "metrics": { "min_knee_angle_deg": 85.0, "duration_ms": 1716, "...": "..." }, "form_score": null, "created_at": "ISO time" }],
+  "coaching_events": [{ "rep_number": 5, "issue_code": "reduced_depth", "message": "...", "action": "send_feedback", "created_at": "ISO time" }]
+}
+```
+
+Knee angle: smaller = deeper. `depth_change_deg` = average of the last 3 reps minus the first 3;
+positive means later reps were shallower. Stats fields are `null` when there is nothing to compute
+them from (no reps; `depth_change_deg` needs at least 4 reps).
 
 **Auth:** every `/api/*` call needs `Authorization: Bearer <Supabase access token>` (the `access_token`
 from Supabase Auth sign-in). Missing/invalid → 401. A session that belongs to another user returns 404,
