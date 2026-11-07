@@ -116,6 +116,7 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.session?.access_token}`, ...init.headers },
   })
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`)
+  if (res.status === 204) return undefined as T   // DELETE succeeds with no body
   return res.json() as Promise<T>
 }
 
@@ -146,6 +147,11 @@ Screens you can build from the other read endpoints (response shapes in [event-c
 const history = await api<any[]>('/api/workouts?limit=20')                     // history list, newest first
 const summary = await api<any>(`/api/workouts/${id}/summary`)                  // reps + coaching messages + stats
 ```
+
+Deleting a workout (history screen, "delete" action): `await api(`/api/workouts/${id}`, { method: 'DELETE' })`. It is
+permanent and removes the reps, coaching messages **and** the stored sensor data, so ask the user to confirm. The
+`api` helper above throws on non-2xx and returns `undefined` for the body-less 204. A `503` means the sensor data couldn't be deleted right now and nothing was removed: tell the
+user to try again. A `429` means too many requests: wait the number of seconds in the `Retry-After` header.
 
 Status codes: `401` token missing/expired, `404` session not found (or not yours), `503` on finish means
 some data didn't save yet: wait a second and call finish again (safe to repeat).
@@ -202,6 +208,8 @@ Rules that matter:
   After `pain` the server stops technique coaching for the whole session (`coaching_enabled: false`). Show
   the returned message and don't encourage the user to continue.
 - Reconnect is safe: call `openWorkoutSocket` again with the same session id; the rep count continues.
+  The server closes a connection after 3 hours with `4401` so the login is re-checked: on `4401`, refresh the token
+  and reconnect (long workouts will hit this once).
 - Close codes: `4401` bad/expired token (refresh and retry), `4404` unknown/not yours, `4409` session already finished,
   `4410` replaced by a newer connection (do NOT auto-reconnect on this one, or two copies of the app will fight),
   `1009` message over 16 KB. Reconnecting after a dropped connection is safe and takes over immediately.

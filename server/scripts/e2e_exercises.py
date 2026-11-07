@@ -26,6 +26,7 @@ from app.main import create_app
 from app.services import exercises as ex
 from app.services.database import DatabaseConfigError, get_client
 from app.simulation import squat_messages
+from scripts._cleanup import arm_watchdog, purge_tiger_readings
 
 SPELLINGS = {"squat": "Squats", "push-up": "Push Up", "pull-up": "pullup", "deadlift": "DEAD LIFT",
              "bench-press": "bench_press", "lunge": "lunges", "plank": "PLANK"}
@@ -46,6 +47,8 @@ def main() -> int:
 
     email, password = f"exercises-{uuid4().hex[:10]}@example.com", secrets.token_urlsafe(24)
     user = admin.auth.admin.create_user({"email": email, "password": password, "email_confirm": True}).user
+    sessions: dict[str, str] = {}
+    watchdog = arm_watchdog(240, lambda: (purge_tiger_readings(list(sessions.values())), admin.auth.admin.delete_user(user.id)))
     try:
         key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "").strip()
         if not key or key.startswith("your-"):
@@ -62,7 +65,6 @@ def main() -> int:
             bad = client.post("/api/workouts", json={"exercise": "burpee"}, headers=h)
             check("unsupported exercise -> 422 naming the supported ones", bad.status_code == 422 and "push-up" in bad.text)
 
-            sessions = {}
             for slug, spelling in SPELLINGS.items():
                 r = client.post("/api/workouts", json={"exercise": spelling}, headers=h)
                 ok = r.status_code == 201 and r.json()["exercise"] == slug and r.json()["analysis_supported"] is (slug == "squat")
@@ -107,6 +109,8 @@ def main() -> int:
             hist = client.get("/api/workouts?limit=20", headers=h).json()
             check("history shows all 7 workouts with their exercise", sorted(w["exercise"] for w in hist) == sorted(SPELLINGS))
     finally:
+        watchdog.cancel()
+        purge_tiger_readings(sessions.values(), settle_s=1.0)  # Tiger Data has no cascade from Supabase
         admin.auth.admin.delete_user(user.id)
         time.sleep(0.3)
         print("deleted throwaway user (cascade removed its workouts)")

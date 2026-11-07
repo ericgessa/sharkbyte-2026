@@ -48,6 +48,9 @@ BURST = 600  # lets a reconnecting phone flush ~2 s of buffered frames
 SIGNAL_RATE_PER_S = 5.0
 SIGNAL_BURST = 20
 RATE_WARN_EVERY_S = 5.0
+# The token is only checked when the socket connects. Closing long connections makes the app reconnect, which
+# re-checks the (refreshed) token, so a revoked or deleted user can't keep streaming for hours.
+MAX_CONNECTION_S = 3 * 3600
 
 
 async def _send(ws: WebSocket, event: BaseModel) -> None:
@@ -199,6 +202,7 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
         bucket = TokenBucket(RATE_PER_S, BURST)
         signal_bucket = TokenBucket(SIGNAL_RATE_PER_S, SIGNAL_BURST)
         last_rate_warning = float("-inf")
+        connected_at = time.monotonic()
         logger.info("ws authenticated session=%s", session_id)
         await _send(
             ws,
@@ -217,6 +221,9 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
             if live.socket is not ws:  # a newer connection took over; this one is stale
                 return
             live.touch()
+            if time.monotonic() - connected_at > MAX_CONNECTION_S:
+                await ws.close(code=CLOSE_UNAUTHENTICATED)  # reconnect with a fresh token; the workout continues
+                return
             if len(raw) > MAX_MESSAGE_BYTES:
                 await ws.close(code=CLOSE_TOO_BIG)
                 return

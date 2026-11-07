@@ -13,17 +13,21 @@ Both refer to the same workout by its `session_id` UUID.
 | Sensor validation, clock anchoring, batching, retry/backoff, buffer overflow | **Tested** with a mock sink |
 | Insert code sends one batched, parameterized, idempotent statement and never leaks the URL | **Tested** against a mock psycopg pool; a real driver run against an unreachable host confirmed a 5 s fail-fast and no password in the error |
 | Migration and analytics SQL are valid PostgreSQL syntax | **Checked** with the PostgreSQL parser |
-| **Migration applied to a real Tiger Data service** | **NOT DONE.** No service exists yet and I cannot create the account for you |
-| **Analytics SQL returns correct numbers on real TimescaleDB** | **NOT VERIFIED.** The live tests are written (`tests/test_tigerdata_live.py`, with known-answer data) but have never been run |
-| Real connection, hypertable, dedupe index, `time_bucket` / `regr_slope` behavior | **NOT VERIFIED** until you run the steps in section 4 |
+| **Migration applied to a real Tiger Data service** | **Done** on 2026-11-07 (PostgreSQL 18.6, TimescaleDB 2.31.0): `sensor_readings` is a hypertable, so the `tsdb.hypertable` syntax and the unique index work |
+| **Analytics SQL returns correct numbers on real TimescaleDB** | **Verified.** The 12 live tests (`tests/test_tigerdata_live.py`) pass: known-answer data gives the exact expected depth, range and trend values, low-confidence glitch frames are ignored, batch insert works, retried batches create no duplicates. Disabling the confidence filter makes 4 of them fail, so they are not vacuous |
+| Whole two-database flow | **Verified live:** `scripts.e2e_tigerdata` passes 10/10; the running shared server wrote camera + flex + IMU readings under the same `session_id` and its `/analytics` endpoint summarized them |
+| What is still **not** verified | Compression/columnstore actually converting chunks (needs data older than one chunk interval); behavior at real camera/ESP32 data rates and volumes; any real hardware data (everything so far is simulated) |
 
-Treat any failure in section 4 as a bug in this setup and tell the backend dev.
+Section 4 shows how to re-run all of this yourself.
 
 ## What you must do by hand
 
-1. Create a Tiger Cloud account and a service (section 1).
-2. Put its **service URL** in `server/.env` as `TIGERDATA_URL` (section 2).
-3. Run the migration and the verification commands (sections 3 and 4).
+The initial setup (service, `TIGERDATA_URL` + password, migration) is done for the shared project. A teammate
+running the backend on their own machine needs the same three steps:
+
+1. Have a Tiger Cloud service (section 1), or be given the shared service's URL and password privately.
+2. Put the **service URL** in `server/.env` as `TIGERDATA_URL` and the password as `TIGERDATA_PASSWORD` (section 2).
+3. The migration only needs running once per service (section 3); check with `python -m scripts.check_tigerdata`.
 
 ## 1. Create a Tiger Data project
 
@@ -244,6 +248,23 @@ the honest talking points and a demo that can all be shown:
 
 Not built (so don't claim them): continuous aggregates, retention policies, real sensor calibration, and any
 LLM calling these summaries yet (the AI coach itself isn't built).
+
+## Deleting data (privacy)
+
+Supabase deletes cascade (delete a user and their workouts, reps and coaching events go too), but **Tiger Data has
+no link to Supabase, so its readings are not deleted automatically.** Two things cover this:
+
+* `DELETE /api/workouts/{id}` deletes the workout from **both** databases. Tiger Data goes first: if it is configured
+  but unreachable the request fails with 503 and nothing is deleted, so sensor data is never left behind with its
+  workout gone. Verified live (`scripts.e2e_delete`, 16 checks).
+* `python -m scripts.purge_orphan_readings` finds readings whose workout no longer exists in Supabase (e.g. a user
+  or workout deleted in the Supabase dashboard) and deletes them with `--apply` (default is a dry run; it only
+  touches sessions Supabase doesn't have, and only if their newest reading is older than `--older-than-hours`,
+  default 1). Run it after deleting anything directly in Supabase. Verified live in the same script.
+
+There is still **no "delete my account" endpoint**. Deleting a user in the Supabase dashboard removes their Supabase data
+only; run the purge tool afterwards. `TigerStore.delete_session_readings(session_id)` is the building block a future
+account-deletion feature should call for each of the user's workouts.
 
 ## Troubleshooting
 

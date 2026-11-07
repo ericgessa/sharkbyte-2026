@@ -24,6 +24,7 @@ from supabase import create_client
 from app.main import create_app
 from app.services.database import DatabaseConfigError, get_client
 from app.simulation import squat_messages
+from scripts._cleanup import arm_watchdog, purge_tiger_readings
 
 REPS = 5
 results: list[tuple[str, bool]] = []
@@ -52,6 +53,8 @@ def main() -> int:
 
     email, password = f"e2e-{uuid4().hex[:12]}@example.com", secrets.token_urlsafe(24)
     user = admin.auth.admin.create_user({"email": email, "password": password, "email_confirm": True}).user
+    created: list[str] = []  # workouts whose Tiger Data readings must be cleaned up
+    watchdog = arm_watchdog(240, lambda: (purge_tiger_readings(created), admin.auth.admin.delete_user(user.id)))
     print(f"created throwaway user {user.id}")
     try:
         token = sign_in_token(email, password)
@@ -63,6 +66,7 @@ def main() -> int:
             r = client.post("/api/workouts", json={"exercise": "squat"}, headers=headers)
             check("create workout (201)", r.status_code == 201)
             sid = r.json()["session_id"]
+            created.append(sid)
 
             with client.websocket_connect(f"/ws/workouts/{sid}") as ws:
                 ws.send_text(json.dumps({"schema_version": 1, "type": "auth", "access_token": token}))
@@ -97,6 +101,7 @@ def main() -> int:
         # Second workout: the user reports pain. It must be saved, and survive a server restart.
         with TestClient(create_app()) as client:
             sid2 = client.post("/api/workouts", json={"exercise": "squat"}, headers=headers).json()["session_id"]
+            created.append(sid2)
             with client.websocket_connect(f"/ws/workouts/{sid2}") as ws:
                 ws.send_text(json.dumps({"schema_version": 1, "type": "auth", "access_token": token}))
                 ws.receive_json()
@@ -133,6 +138,8 @@ def main() -> int:
         check("session row completed with ended_at", row["status"] == "completed" and bool(row["ended_at"]))
         check("session row total_reps and owner correct", row["total_reps"] == REPS and row["user_id"] == user.id)
     finally:
+        watchdog.cancel()
+        purge_tiger_readings(created, settle_s=1.0)  # Tiger Data has no cascade from Supabase
         admin.auth.admin.delete_user(user.id)
         time.sleep(0.5)
         left = admin.table("workout_sessions").select("id", count="exact").eq("user_id", user.id).limit(0).execute().count
