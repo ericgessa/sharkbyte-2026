@@ -1,4 +1,4 @@
-"""Deterministic squat repetition counter.
+"""Deterministic repetition counter (squat on the knee angle, push-up on the elbow angle).
 
 A small state machine driven by knee-angle samples. No I/O, no clock reads, no
 randomness: the same sample stream always yields the same reps, which makes it
@@ -15,7 +15,8 @@ Phases:  UNARMED -> STANDING -> DESCENDING -> BOTTOM -> ASCENDING -> STANDING
 * A rep only counts if the bottom threshold was reached and the whole rep took
   at least ``min_rep_ms``.
 
-The default thresholds are detection thresholds, not a definition of a
+The same state machine serves every "angle goes down, then back up" exercise: ``SquatConfig`` reads the knee angle,
+``PushUpConfig`` reads the elbow angle (see ``joint``), each with its own thresholds. The default thresholds are detection thresholds, not a definition of a
 "correct" squat. They are meant to be overridden per exercise/user
 (``exercises.config``) once calibration exists.
 """
@@ -47,6 +48,7 @@ class DropReason(str, Enum):
 
 @dataclass(frozen=True)
 class SquatConfig:
+    joint: str = "knee"  # which angle drives the counter: "knee" or "elbow"
     min_confidence: float = 0.6
     standing_deg: float = 160.0  # at/above: standing
     descent_start_deg: float = 150.0  # below: left standing (10 deg hysteresis)
@@ -67,25 +69,56 @@ class SquatConfig:
 
 
 @dataclass(frozen=True)
+class PushUpConfig(SquatConfig):
+    """Push-up: the elbow angle is ~straight at the top and bends to about 90 degrees at the bottom.
+
+    UNTUNED guesses, like the squat thresholds: they have only been exercised with simulated data. A little more
+    lenient on depth than a strict 90 degrees because the camera sees the elbow from the side and reads it loosely.
+    """
+
+    joint: str = "elbow"
+    standing_deg: float = 155.0  # "standing" here means arms extended at the top
+    descent_start_deg: float = 145.0
+    bottom_deg: float = 100.0
+    bottom_exit_deg: float = 110.0
+    min_rep_ms: int = 600  # push-ups are quicker than squats
+    adapt_floor_deg: float = 135.0
+
+
+@dataclass(frozen=True)
 class PoseSample:
     sequence: int
     timestamp_ms: int
     confidence: float
     left_knee_deg: float | None = None
     right_knee_deg: float | None = None
+    left_elbow_deg: float | None = None
+    right_elbow_deg: float | None = None
+
+    def pair(self, joint: str) -> tuple[float | None, float | None]:
+        """(left, right) angle of the joint that drives the counter."""
+        if joint == "elbow":
+            return self.left_elbow_deg, self.right_elbow_deg
+        return self.left_knee_deg, self.right_knee_deg
 
 
 @dataclass(frozen=True)
 class RepMetrics:
     rep_number: int
-    min_knee_angle_deg: float
+    min_angle_deg: float  # the deepest the counted joint got (knee for squats, elbow for push-ups)
     descent_ms: int
     ascent_ms: int
     duration_ms: int
-    max_asymmetry_deg: float | None  # None if both knees were never visible together
+    max_asymmetry_deg: float | None  # None if both sides were never visible together
     # The pose stream's own clock (ms). Lets time-series analytics slice a session into reps.
     start_ts_ms: int = 0
     end_ts_ms: int = 0
+    joint: str = "knee"
+
+    @property
+    def min_knee_angle_deg(self) -> float:
+        """Kept for knee exercises (the original field name). For other joints use ``min_angle_deg``."""
+        return self.min_angle_deg
 
 
 @dataclass(frozen=True)
@@ -197,7 +230,7 @@ class SquatRepCounter:
             self._settled.clear()
         self._last_ts = sample.timestamp_ms
 
-        angle = self._knee_angle(sample)
+        angle = self._angle(sample)
         if angle is None:
             return StepResult(phase=self.phase, tracking_changed=changed)
 
@@ -213,9 +246,8 @@ class SquatRepCounter:
         logger.debug("dropped frame seq=%s reason=%s", sample.sequence, reason.value)
         return StepResult(dropped=reason, tracking_changed=tracking_changed, phase=self.phase)
 
-    @staticmethod
-    def _knee_angle(sample: PoseSample) -> float | None:
-        angles = [a for a in (sample.left_knee_deg, sample.right_knee_deg) if a is not None]
+    def _angle(self, sample: PoseSample) -> float | None:
+        angles = [a for a in sample.pair(self.config.joint) if a is not None]
         return sum(angles) / len(angles) if angles else None
 
     def _advance(self, angle: float, sample: PoseSample) -> RepMetrics | None:
@@ -286,8 +318,9 @@ class SquatRepCounter:
         rep = self._rep
         assert rep is not None
         rep.min_angle = min(rep.min_angle, angle)
-        if sample.left_knee_deg is not None and sample.right_knee_deg is not None:
-            diff = abs(sample.left_knee_deg - sample.right_knee_deg)
+        left, right = sample.pair(self.config.joint)
+        if left is not None and right is not None:
+            diff = abs(left - right)
             rep.max_asymmetry = diff if rep.max_asymmetry is None else max(rep.max_asymmetry, diff)
 
     def _abort(self) -> None:
@@ -310,13 +343,21 @@ class SquatRepCounter:
         self.rep_count += 1
         metrics = RepMetrics(
             rep_number=self.rep_count,
-            min_knee_angle_deg=round(rep.min_angle, 1),
+            min_angle_deg=round(rep.min_angle, 1),
             descent_ms=rep.bottom_ts - rep.start_ts,
             ascent_ms=ts - rep.ascent_start_ts,
             duration_ms=duration,
             max_asymmetry_deg=None if rep.max_asymmetry is None else round(rep.max_asymmetry, 1),
             start_ts_ms=rep.start_ts,
             end_ts_ms=ts,
+            joint=self.config.joint,
         )
         logger.info("rep %d completed: %s", self.rep_count, metrics)
         return metrics
+
+
+@dataclass
+class PushUpRepCounter(SquatRepCounter):
+    """Counts push-ups from the elbow angle. Same machine as the squat counter, push-up thresholds."""
+
+    config: SquatConfig = field(default_factory=PushUpConfig)

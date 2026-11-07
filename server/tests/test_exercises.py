@@ -11,12 +11,14 @@ from app.main import create_app
 from app.services import database as db
 from app.services import exercises as ex
 from app.services.ingest import SensorIngestor
-from app.services.rep_counter import NoopRepCounter, PoseSample, SquatRepCounter
+from app.services.rep_counter import NoopRepCounter, PoseSample, PushUpRepCounter, SquatRepCounter
 from app.simulation import squat_messages
 from tests.fakes import ALICE, BOB, FakeAuth, FakeTiger, InMemoryStore, auth_message
 from tests.test_database import FakeClient, calls
 
 REQUESTED = ["squat", "push-up", "pull-up", "deadlift", "bench-press", "lunge", "plank"]
+ANALYZED = ["squat", "push-up"]  # have a rep counter; everything else is logged only
+UNANALYZED = [s for s in REQUESTED if s not in ANALYZED]
 
 
 @pytest.fixture
@@ -93,10 +95,11 @@ def test_close_misspellings_get_a_suggestion():
         ex.resolve("dedlift")
 
 
-def test_only_squat_has_analysis_and_the_flag_matches_reality():
-    assert [e.slug for e in ex.all_exercises() if e.analysis_supported] == ["squat"]
+def test_only_squat_and_pushup_have_analysis_and_the_flag_matches_reality():
+    assert [e.slug for e in ex.all_exercises() if e.analysis_supported] == ANALYZED
     assert isinstance(ex.find("squat").make_counter(3), SquatRepCounter) and ex.find("squat").make_counter(3).rep_count == 3
-    for slug in REQUESTED[1:]:
+    assert isinstance(ex.find("push-up").make_counter(2), PushUpRepCounter) and ex.find("push-up").make_counter(2).rep_count == 2
+    for slug in UNANALYZED:
         assert isinstance(ex.find(slug).make_counter(5), NoopRepCounter)  # never counts, even if reps were saved
 
 
@@ -124,7 +127,7 @@ def test_every_registered_exercise_can_start_a_workout(client, slug):
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["exercise"] == slug and body["status"] == "active"
-    assert body["analysis_supported"] is (slug == "squat")
+    assert body["analysis_supported"] is (slug in ANALYZED)
 
 
 def test_spelling_variants_are_stored_and_returned_as_the_canonical_name(client, store):
@@ -160,9 +163,9 @@ def test_extra_fields_are_still_rejected(client):
 
 def test_history_and_get_report_each_workouts_exercise(client):
     a = create(client, {"exercise": "squat"}).json()["session_id"]
-    b = create(client, {"exercise": "Push Up"}).json()["session_id"]
+    b = create(client, {"exercise": "Pull Up"}).json()["session_id"]
     got = {w["session_id"]: (w["exercise"], w["analysis_supported"]) for w in client.get("/api/workouts", headers=ALICE).json()}
-    assert got == {a: ("squat", True), b: ("push-up", False)}
+    assert got == {a: ("squat", True), b: ("pull-up", False)}
     assert client.get(f"/api/workouts/{b}", headers=ALICE).json()["analysis_supported"] is False
 
 
@@ -174,7 +177,7 @@ def test_exercise_listing_for_the_frontend_needs_no_login(client):
     squat = listing[0]
     assert squat == {"slug": "squat", "display_name": "Squat", "aliases": ["squats", "air squat", "bodyweight squat"],
                      "analysis_supported": True, "primary_angles": ["left_knee_angle", "right_knee_angle"]}
-    assert {e["slug"]: e["analysis_supported"] for e in listing} == {s: s == "squat" for s in REQUESTED}
+    assert {e["slug"]: e["analysis_supported"] for e in listing} == {s: s in ANALYZED for s in REQUESTED}
 
 
 # ---- logging vs analysis: what the live socket does per exercise ------------
@@ -200,7 +203,7 @@ def test_squat_session_ready_says_analysis_is_on_and_reps_still_count(client):
     assert client.post(f"/api/workouts/{sid}/finish", headers=ALICE).json()["total_reps"] == 2
 
 
-@pytest.mark.parametrize("slug", REQUESTED[1:])
+@pytest.mark.parametrize("slug", UNANALYZED)
 def test_other_exercises_are_logged_but_never_counted_or_coached(client, store, tiger, slug):
     sid = create(client, {"exercise": slug}).json()["session_id"]
     cm, ws, ready = open_ws(client, sid)

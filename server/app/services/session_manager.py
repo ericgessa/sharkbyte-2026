@@ -36,7 +36,7 @@ DEFAULT_SWEEP_INTERVAL_S = 60.0
 class LiveSession:
     session_id: UUID
     user_id: str
-    counter: Any  # SquatRepCounter, or NoopRepCounter for exercises without analysis
+    counter: Any  # SquatRepCounter / PushUpRepCounter, or NoopRepCounter for exercises without analysis
     exercise: Exercise | None = None
     coach: RuleCoach = field(default_factory=RuleCoach)
     clock: ClockAnchors = field(default_factory=ClockAnchors)  # device/camera clocks -> server time
@@ -69,7 +69,9 @@ class LiveSessions:
         live = self._live.get(session_id)
         if live is None:
             exercise = exercise or find(DEFAULT_EXERCISE)
-            live = LiveSession(session_id, user_id, exercise.make_counter(saved_reps), exercise=exercise)
+            live = LiveSession(
+                session_id, user_id, exercise.make_counter(saved_reps), exercise=exercise, coach=RuleCoach(joint=exercise.joint)
+            )
             self._live[session_id] = live
         return live
 

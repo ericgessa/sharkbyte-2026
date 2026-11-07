@@ -4,7 +4,7 @@ An AI gym coach built from three layers:
 
 - **CV layer (MediaPipe):** pose estimation from the camera turns video into body landmarks and
   joint angles such as knee angles.
-- **Rep engine (FastAPI):** the backend counts squat reps in real time from those angles and
+- **Rep engine (FastAPI):** the backend counts squat and push-up reps in real time from those angles and
   measures each one: depth, tempo, and left/right asymmetry. A rule-based coach gives feedback.
 - **AI layer (LLM, optional):** words that feedback in natural language and writes workout recaps.
   The rep count and the decision to coach stay deterministic and never depend on the model. The
@@ -50,9 +50,9 @@ sensor time-series and answers time-series questions. Both share the workout's `
 3. The client creates a workout with `POST /api/workouts`.
 4. It opens `/ws/workouts/{session_id}`, sends an `auth` message first, then `pose_update` frames
    (about 30 per second).
-5. The server runs a hysteresis state machine over the knee angles. It ignores low-confidence
+5. The server runs a hysteresis state machine over the knee angles (elbow angles for push-ups). It ignores low-confidence
    frames, drops out-of-order frames, and discards reps faster than 800 ms as noise.
-6. Each counted rep produces a `rep_completed` message with `min_knee_angle_deg`, `descent_ms`,
+6. Each counted rep produces a `rep_completed` message with `min_angle_deg` (and `joint`), `descent_ms`,
    `ascent_ms`, `duration_ms`, and `max_asymmetry_deg`, and is saved to Supabase.
 7. **Coaching:** when a problem repeats (for example depth dropping), the rule-based coach sends a
    `coaching_feedback` cue and saves it. If the optional LLM layer is enabled, it may reword the cue
@@ -142,10 +142,11 @@ npx tsc --noEmit
 Run the tests:
 
 - Supabase login (JWT) on every API call; ownership enforced; row-level security on the tables.
-- Live workouts over a WebSocket: squat rep counting, rule-based coaching, pause / resume / **pain-stop**, ESP32 data
+- Live workouts over a WebSocket: squat and push-up rep counting, rule-based coaching, pause / resume / **pain-stop**, ESP32 data
   relay, reconnect takeover, flood and size limits.
-- 7 exercises can be logged (squat, push-up, pull-up, deadlift, bench press, lunge, plank). **Only squat is analyzed**
-  (reps counted, coached); the others are logged and their data recorded.
+- 7 exercises can be logged (squat, push-up, pull-up, deadlift, bench press, lunge, plank). **Squat and push-up are
+  analyzed** (reps counted, coached; thresholds untuned, simulated data only); the others are logged and their data
+  recorded.
 - Workout history, per-workout summary, Tiger Data analytics, deleting a workout or a whole account from both databases.
 - An optional LLM coach layer with the rules as a guaranteed fallback. Built and tested offline; **not yet run
   against a real model**.
@@ -161,8 +162,8 @@ Run the tests:
 - [ ] CV layer on phones (native camera + MediaPipe) and a real-camera accuracy check
 - [ ] Mobile live rep UI
 - [ ] AI layer verified against a real model (needs a Gemini API key; the Gemini provider is built but unrun)
-- [ ] Rep counting and coaching for the exercises other than squat
-- [ ] Tune the squat thresholds on real recordings (they are untuned guesses)
+- [ ] Rep counting and coaching for the exercises other than squat and push-up
+- [ ] Tune the squat and push-up thresholds on real recordings (they are untuned guesses)
 - [ ] `set_finished` event
 - [ ] A hosted deployment ([`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) is untested)
 

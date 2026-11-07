@@ -12,12 +12,14 @@ TREND_WINDOW = 3
 def compute_stats(reps: list[dict[str, Any]]) -> dict[str, Any]:
     """``reps`` are repetition rows ordered by rep_number, each with a ``metrics`` dict.
 
-    Knee angle: smaller = deeper. ``depth_change_deg`` is (average of the last 3 reps)
+    Joint angle (knee for squats, elbow for push-ups): smaller = deeper. ``depth_change_deg`` is (average of the last 3 reps)
     minus (average of the first 3): positive means later reps were shallower.
     Fields are None when there is nothing to compute them from.
     """
     metrics = [r.get("metrics") or {} for r in reps]
-    angles = [m["min_knee_angle_deg"] for m in metrics if m.get("min_knee_angle_deg") is not None]
+    # Older saved reps only have min_knee_angle_deg; newer ones also carry the generic min_angle_deg.
+    angles = [a for a in (m.get("min_angle_deg", m.get("min_knee_angle_deg")) for m in metrics) if a is not None]
+    knee_angles = [m["min_knee_angle_deg"] for m in metrics if m.get("min_knee_angle_deg") is not None]
     durations = [m["duration_ms"] for m in metrics if m.get("duration_ms") is not None]
     asym = [m["max_asymmetry_deg"] for m in metrics if m.get("max_asymmetry_deg") is not None]
 
@@ -30,9 +32,12 @@ def compute_stats(reps: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "rep_count": len(reps),
-        "avg_min_knee_angle_deg": r1(fmean(angles)) if angles else None,
-        "deepest_knee_angle_deg": r1(min(angles)) if angles else None,
-        "shallowest_knee_angle_deg": r1(max(angles)) if angles else None,
+        "avg_min_angle_deg": r1(fmean(angles)) if angles else None,
+        "deepest_angle_deg": r1(min(angles)) if angles else None,
+        "shallowest_angle_deg": r1(max(angles)) if angles else None,
+        "avg_min_knee_angle_deg": r1(fmean(knee_angles)) if knee_angles else None,
+        "deepest_knee_angle_deg": r1(min(knee_angles)) if knee_angles else None,
+        "shallowest_knee_angle_deg": r1(max(knee_angles)) if knee_angles else None,
         "depth_change_deg": r1(depth_change),
         "avg_rep_duration_ms": round(fmean(durations)) if durations else None,
         "max_asymmetry_deg": r1(max(asym)) if asym else None,

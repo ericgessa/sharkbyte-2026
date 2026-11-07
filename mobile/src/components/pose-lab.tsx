@@ -107,7 +107,7 @@ export function PoseLab() {
         break;
       case 'rep_completed':
         setReps(e.rep_count);
-        note(`rep ${e.rep_count}: deepest ${e.metrics.min_knee_angle_deg} deg, ${e.metrics.duration_ms} ms`);
+        note(`rep ${e.rep_count}: deepest ${e.metrics.min_angle_deg} deg (${e.metrics.joint}), ${e.metrics.duration_ms} ms`);
         break;
       case 'coaching_feedback':
         setCue(e.message);

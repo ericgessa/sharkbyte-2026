@@ -183,7 +183,9 @@ def _check_text(text: str, context: dict[str, Any], max_chars: int) -> str | Non
 # ------------------------------------------------------------------ the rule-based summary (also the fallback)
 
 
-def rules_summary(context: dict[str, Any], analysis_supported: bool = True, exercise_name: str = "workout") -> str:
+def rules_summary(
+    context: dict[str, Any], analysis_supported: bool = True, exercise_name: str = "workout", joint: str = "knee"
+) -> str:
     """A plain, deterministic recap built only from the data. Used when the LLM is off, fails, or must not be used."""
     sb = context.get("supabase", {})
     stats = sb.get("stats", {})
@@ -205,7 +207,7 @@ def rules_summary(context: dict[str, Any], analysis_supported: bool = True, exer
             parts.append("Your depth stayed fairly consistent.")
         asym = stats.get("max_asymmetry_deg")
         if asym is not None and asym >= 15:
-            parts.append("Your left and right knees differed noticeably at times, which can also come from the camera angle.")
+            parts.append(f"Your left and right {joint}s differed noticeably at times, which can also come from the camera angle.")
     cues = [e for e in events if e.get("issue_code") != PAIN_ISSUE_CODE]
     if cues:
         parts.append(f"You received {len(cues)} coaching cue{'s' if len(cues) != 1 else ''} during the workout.")
