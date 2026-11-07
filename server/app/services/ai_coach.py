@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import deque
 from typing import Any, Protocol
 
@@ -36,6 +37,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "gemini-3.8-flash"
 TIMEOUT_S = 4.0  # a cue that arrives later than this is about a rep the user has already forgotten
 MAX_MESSAGE_CHARS = 160
+DEBUG_MAX_CHARS = 800  # debug lines truncate the prompt/reply past this
+# The SDK sends its HTTP timeout to Google as a server deadline, and the API rejects deadlines under 10 s
+# (400 INVALID_ARGUMENT). So the SDK gets this backstop and TIMEOUT_S is enforced on our side instead.
+MIN_API_DEADLINE_MS = 10_000
+
+# Debug lines (what is sent to the model and what it returns) are logged at DEBUG level.
+# Turn them on with AI_COACH_DEBUG=1 (shell or server/.env), or --debug on the CLI below.
+
+
+def _truncate(text: str, limit: int = DEBUG_MAX_CHARS) -> str:
+    return text if len(text) <= limit else f"{text[:limit]}... [+{len(text) - limit} chars]"
 
 # What each issue means, in words the model can build on. Kept factual: tilt, not anatomy.
 ISSUE_MEANING = {
@@ -104,9 +116,11 @@ class GeminiLLM:
         self._types = types
         self.model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
         # One attempt only: a retried cue would arrive too late to be useful, and the caller falls back anyway.
+        # The real time limit is AICoach.timeout_s (asyncio.wait_for); this deadline is only a backstop.
+        self.http_timeout_ms = max(int(timeout_s * 1000), MIN_API_DEADLINE_MS)
         self._client = genai.Client(
             api_key=key,
-            http_options=types.HttpOptions(timeout=int(timeout_s * 1000), retry_options=types.HttpRetryOptions(attempts=1)),
+            http_options=types.HttpOptions(timeout=self.http_timeout_ms, retry_options=types.HttpRetryOptions(attempts=1)),
         )
 
     async def generate(self, system: str, prompt: str, schema: dict[str, Any]) -> str:
@@ -195,6 +209,8 @@ class AICoach:
         self.agent_messages = 0
         self.fallbacks = 0
         self.last_fallback_reason: str | None = None
+        if os.environ.get("AI_COACH_DEBUG") == "1":  # read here, after server/.env has been loaded
+            logger.setLevel(logging.DEBUG)
 
     async def phrase(self, decision: PostureDecision) -> PostureDecision:
         """The decision with Gemini's wording (``source="agent"``) or unchanged (``source="rules"``).
@@ -204,15 +220,26 @@ class AICoach:
         if self.llm is None:
             return self._fallback(decision, "no LLM configured")
         prompt = build_prompt(decision, list(self.recent_cues), self.exercise)
+        model = getattr(self.llm, "model", type(self.llm).__name__)
+        logger.debug(
+            "-> %s request (rep %s, %s; system prompt %d chars not shown):\n%s",
+            model,
+            decision.rep_number,
+            decision.issue_code,
+            len(SYSTEM_PROMPT),
+            _truncate(prompt),
+        )
         try:
+            start = time.perf_counter()
             raw = await asyncio.wait_for(self.llm.generate(SYSTEM_PROMPT, prompt, RESPONSE_SCHEMA), self.timeout_s)
+            logger.debug("<- %s reply in %.0f ms:\n%s", model, (time.perf_counter() - start) * 1000, _truncate(raw))
             message = validate_reply(raw, decision)
         except asyncio.TimeoutError:
             return self._fallback(decision, f"timed out after {self.timeout_s:g} s")
         except InvalidReply as exc:
             return self._fallback(decision, f"invalid reply: {exc}")
         except Exception as exc:  # provider/network errors: never let them reach the workout
-            return self._fallback(decision, f"{type(exc).__name__}")
+            return self._fallback(decision, f"{type(exc).__name__}: {_truncate(str(exc), 300)}")
         self.agent_messages += 1
         self.recent_cues.append(message)
         return dataclasses.replace(decision, message=message, source="agent")
@@ -235,7 +262,6 @@ class FakeLLM:
 
 if __name__ == "__main__":  # pragma: no cover - manual tool
     import argparse
-    import time
     from pathlib import Path
 
     from app.services.posture import PostureConfig, analyze
@@ -252,7 +278,12 @@ if __name__ == "__main__":  # pragma: no cover - manual tool
     p.add_argument("--fake", action="store_true", help="use an offline fake instead of calling Gemini")
     p.add_argument("--model", default=None, help=f"default: $GEMINI_MODEL or {DEFAULT_MODEL}")
     p.add_argument("--mounting-offset", type=float, default=0.0)
+    p.add_argument("--debug", action="store_true", help="print what is sent to the model and what it returns")
     args = p.parse_args()
+
+    logging.basicConfig(level=logging.WARNING, format="[%(levelname)s] %(message)s")
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
 
     msgs = [json.loads(line) for line in args.path.read_text(encoding="utf-8").splitlines() if line.strip()]
     decisions = analyze(msgs, PostureConfig(mounting_offset_deg=args.mounting_offset)).decisions

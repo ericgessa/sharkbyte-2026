@@ -1,0 +1,76 @@
+{
+  "simulated": true,
+  "scenario": "sensor_dropout",
+  "description": "Good form, but the Bluetooth link drops for 1.5 s around the bottom of rep 3. A detector should report no posture issue and must not invent one from the gap.",
+  "expected_issues": [],
+  "assumptions": {
+    "placement": "one ESP32 + IMU flat on the upper back, between the shoulder blades",
+    "imu_pitch_deg": "forward lean of the upper torso from vertical, + = forward (hip hinge and rounding combined)",
+    "imu_roll_deg": "sideways tilt, + = toward the user's right",
+    "accel_g": "device frame: z up the spine, x out of the chest, y toward the user's left; 1 g at rest",
+    "not_simulated": "flex sensor, yaw, sensor calibration, real noise characteristics"
+  },
+  "generator": {
+    "seed": 0,
+    "reps": 5,
+    "rate_hz": 50,
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "device_id": "esp32-01"
+  },
+  "message_count": 827,
+  "times": "device clock ms, the same clock as each message's timestamp_ms",
+  "reps": [
+    {
+      "rep_number": 1,
+      "start_ms": 2744506,
+      "bottom_ms": 2745706,
+      "end_ms": 2746905,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 2,
+      "start_ms": 2747905,
+      "bottom_ms": 2749086,
+      "end_ms": 2750267,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 3,
+      "start_ms": 2751267,
+      "bottom_ms": 2752482,
+      "end_ms": 2753696,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 4,
+      "start_ms": 2754696,
+      "bottom_ms": 2755928,
+      "end_ms": 2757161,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    },
+    {
+      "rep_number": 5,
+      "start_ms": 2758161,
+      "bottom_ms": 2759347,
+      "end_ms": 2760533,
+      "standing_pitch_deg": 5.0,
+      "bottom_pitch_deg": 40.0,
+      "bottom_roll_deg": 0.0
+    }
+  ],
+  "dropouts": [
+    {
+      "start_ms": 2751732,
+      "end_ms": 2753232,
+      "missing_messages": 75
+    }
+  ]
+}
