@@ -65,6 +65,24 @@ def test_create_workout_session_uses_exercise_id_and_user():
     assert args[0] == {"user_id": str(uid), "exercise_id": 7}
 
 
+def test_save_coaching_event_upserts_on_caller_supplied_id():
+    client, sid, eid = FakeClient({}), uuid4(), uuid4()
+    db.save_coaching_event(sid, eid, 5, "reduced_depth", "msg", "send_feedback", client=client)
+    (args, kwargs), = calls(client, "upsert")
+    assert args[0] == {
+        "id": str(eid), "session_id": str(sid), "rep_number": 5,
+        "issue_code": "reduced_depth", "message": "msg", "action": "send_feedback",
+    }
+    assert kwargs == {"on_conflict": "id"}  # a retried save can't create a duplicate
+
+
+def test_save_repetition_upserts_on_session_and_rep_number():
+    client = FakeClient({})
+    db.save_repetition(uuid4(), 3, {"a": 1}, client=client)
+    (_, kwargs), = calls(client, "upsert")
+    assert kwargs == {"on_conflict": "session_id,rep_number"}
+
+
 def test_unknown_exercise_raises_clear_error():
     with pytest.raises(db.DatabaseError, match="Unknown exercise"):
         db.get_exercise_id("deadlift", FakeClient({"exercises": []}))

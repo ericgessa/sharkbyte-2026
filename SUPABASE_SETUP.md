@@ -1,7 +1,9 @@
 # Supabase setup (Phase 1)
 
-Database + auth foundation for SharkByte. This phase only sets up Supabase and a small Python
-client; the API routes and WebSocket still use in-memory sessions and are not connected to it yet.
+Database + auth foundation for SharkByte. The API routes and WebSocket now use it: sessions and reps
+are saved in Supabase and requests are authenticated with Supabase access tokens (see
+`docs/event-contracts.md`). One command checks the whole path against your project:
+`python -m scripts.e2e_live` (run from `server/`; uses a throwaway user and cleans up).
 
 ## Verification status (read this first)
 

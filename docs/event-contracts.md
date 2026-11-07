@@ -10,20 +10,44 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/health` | `{"status":"ok"}` |
+| GET | `/health` | `{"status":"ok"}` (no auth) |
 | POST | `/api/workouts` | body `{"exercise":"squat"}` → 201 `WorkoutOut` |
-| GET | `/api/workouts/{session_id}` | 200 `WorkoutOut` or 404 |
+| GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
+| POST | `/api/workouts/{session_id}/finish` | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry) |
 
-`WorkoutOut`: `session_id`, `exercise`, `status` (`active`\|`completed`), `started_at`,
-`total_reps`, `dropped_frames`, `aborted_attempts`.
+`WorkoutOut`: `session_id`, `exercise`, `status` (`active`\|`completed`), `started_at`, `ended_at`
+(null while active), `total_reps`, `dropped_frames`, `aborted_attempts` (the last two are live
+counters, 0 when the session isn't streaming).
 
-**Auth: not implemented yet (Phase 2).** Until then anyone who can reach the server can create and
-use sessions. Do not expose it publicly.
+**Auth:** every `/api/*` call needs `Authorization: Bearer <Supabase access token>` (the `access_token`
+from Supabase Auth sign-in). Missing/invalid → 401. A session that belongs to another user returns 404,
+same as one that doesn't exist.
+
+Sessions, reps and totals are stored in Supabase. `total_reps` on finish is the number of repetition rows
+actually saved. Starting a workout does not require the WebSocket to stay connected: if the socket drops,
+reconnect and the rep count continues from what was saved.
 
 ## WebSocket `/ws/workouts/{session_id}`
 
-The session must already exist, otherwise the server closes with code **4404**. The `session_id`
-in the URL decides which session is used; it must equal `session_id` in every message body.
+**Handshake.** After connecting, the *first* message must be (within 10 s):
+
+```json
+{ "schema_version": 1, "type": "auth", "access_token": "<Supabase access token>" }
+```
+
+The token is sent in a message, not the URL, so it doesn't end up in logs. On success the server replies
+`{"type":"session_ready","session_id":"UUID","rep_count":0}`; start sending `pose_update` after that.
+Otherwise the server closes the socket with an application close code:
+
+| Code | Meaning |
+| --- | --- |
+| 4401 | first message missing/not `auth`, bad or expired token, or timeout |
+| 4404 | session doesn't exist **or belongs to someone else** |
+| 4409 | session is already completed (or was finished while streaming) |
+
+The `session_id` in the URL decides which session is used; it must equal `session_id` in every message body.
+Each rep is saved to Supabase in the background right after `rep_completed` is sent. A database outage
+never stops counting; failed saves are retried when `finish` is called.
 
 ### Client → server: `pose_update`
 
@@ -73,6 +97,29 @@ in the URL decides which session is used; it must equal `session_id` in every me
 `max_asymmetry_deg` is `null` if both knees were never visible in the same frame.
 `duration_ms` runs from leaving standing (< 150°) to returning to standing (≥ 160°).
 
+`coaching_feedback` — sent right after the `rep_completed` that triggered it, and saved to
+`coaching_events`:
+
+```json
+{
+  "schema_version": 1,
+  "type": "coaching_feedback",
+  "session_id": "UUID",
+  "rep_count": 5,
+  "issue_code": "reduced_depth",
+  "message": "Your depth has decreased compared with earlier reps. Try your previous comfortable range.",
+  "source": "rules"
+}
+```
+
+Currently a rule-based coach (`source: "rules"`; `"agent"` is reserved for the future LLM coach).
+Issue codes: `reduced_depth` (last 2 reps clearly shallower than the median of the first 3),
+`asymmetry` (left/right knee angles differ a lot in 2 reps in a row). Feedback is rate-limited: none
+until 3 reps exist, at least 2 reps between messages, 4 reps before repeating an issue, max 6 per
+session. Messages describe measurements only; they never give medical advice. The thresholds are
+untuned starting values (`CoachConfig` in `server/app/services/coaching.py`).
+Clients should treat `issue_code` as an open set and show `message` as-is.
+
 `tracking_status` — sent only on change:
 `{"type":"tracking_status","session_id":"UUID","tracking":"lost"|"recovered", ...}`
 
@@ -81,9 +128,10 @@ in the URL decides which session is used; it must equal `session_id` in every me
 
 ### Not yet defined
 
-`sensor_update` (ESP32), `coaching_feedback`, `set_finished`: see AGENTS.md; add here when built.
+`sensor_update` (ESP32), `set_finished`, and anything pain/"stop" related: see AGENTS.md; add here when built.
 
 ## Simulated data
 
-`python -m app.simulation --reps 5` (from `server/`) streams generated pose updates to a running
-server. This is synthetic data, never real camera or sensor output.
+From `server/`: `python -m scripts.e2e_live` runs the full flow against your Supabase project with a
+throwaway user (and cleans up). `python -m app.simulation --reps 5 --token <access_token>` streams
+generated pose updates to a running server. This is synthetic data, never real camera or sensor output.

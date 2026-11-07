@@ -1,40 +1,48 @@
-"""In-memory workout sessions (Phase 1).
+"""Live, in-memory state for workouts that are currently streaming.
 
-Phase 2 replaces creation/lookup with Supabase-backed, ownership-checked
-sessions; the live ``SquatRepCounter`` stays in memory either way, because the
-real-time loop must not wait on the database.
+The database row (Supabase) is the permanent record; this holds only what the
+real-time loop needs: the rep counter and any reps that failed to save. If the
+server restarts, a reconnecting client gets a fresh counter seeded from the
+number of reps already saved, so rep numbers keep counting up.
 """
 
 from __future__ import annotations
 
-import logging
+import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
+from app.services.coaching import RuleCoach
+from app.services.persistence import Write
 from app.services.rep_counter import SquatRepCounter
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
-class WorkoutSession:
-    exercise: str
-    id: UUID = field(default_factory=uuid4)
-    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    status: str = "active"
-    counter: SquatRepCounter = field(default_factory=SquatRepCounter)
+class LiveSession:
+    session_id: UUID
+    user_id: str
+    counter: SquatRepCounter
+    coach: RuleCoach = field(default_factory=RuleCoach)
+    # Writes that failed and must be retried when finishing (see services/persistence.py).
+    pending_writes: list[Write] = field(default_factory=list)
+    # Background saves in flight; finishing waits for these so no rep is missed.
+    save_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    finished: bool = False
 
 
-class SessionManager:
+class LiveSessions:
     def __init__(self) -> None:
-        self._sessions: dict[UUID, WorkoutSession] = {}
+        self._live: dict[UUID, LiveSession] = {}
 
-    def create(self, exercise: str) -> WorkoutSession:
-        session = WorkoutSession(exercise=exercise)
-        self._sessions[session.id] = session
-        logger.info("session created id=%s exercise=%s", session.id, exercise)
-        return session
+    def get(self, session_id: UUID) -> LiveSession | None:
+        return self._live.get(session_id)
 
-    def get(self, session_id: UUID) -> WorkoutSession | None:
-        return self._sessions.get(session_id)
+    def get_or_create(self, session_id: UUID, user_id: str, saved_reps: int = 0) -> LiveSession:
+        live = self._live.get(session_id)
+        if live is None:
+            live = LiveSession(session_id, user_id, SquatRepCounter(rep_count=saved_reps))
+            self._live[session_id] = live
+        return live
+
+    def remove(self, session_id: UUID) -> None:
+        self._live.pop(session_id, None)
