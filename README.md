@@ -1,57 +1,134 @@
 # SharkByte 2026
 
-An AI personal gym coach. A phone camera (pose tracking) and an optional ESP32 wearable stream measurements to a
-backend that counts reps, gives short form feedback, and keeps the workout history.
+An AI gym coach built from three layers:
 
-> Hackathon project. **Status:** the backend is built and tested with simulated data; nothing has been validated
-> with a real camera or real wearable yet, and the AI (LLM) coach is not built. See "What works" below.
+- **CV layer (MediaPipe):** pose estimation from the camera turns video into body landmarks and
+  joint angles such as knee angles.
+- **Rep engine (FastAPI):** the backend counts squat reps in real time from those angles and
+  measures each one: depth, tempo, and left/right asymmetry.
+- **AI layer (Gemini API):** turns the per-rep metrics into natural-language coaching feedback.
 
-## Layout
+Sensor input from an ESP32 is also planned.
 
-| Folder | What |
+> **Status: early development.** Phase 1 (rep counting over WebSocket, no auth, in-memory sessions)
+> works against simulated data. The MediaPipe and Gemini layers are **planned and not integrated
+> yet**, and the mobile app is still the Expo starter template. Persistence and auth (Phase 2) are
+> not built. Do not expose the server publicly.
+
+## Repository layout
+
+| Path | What it is |
 | --- | --- |
-| `mobile/` | Expo / React Native app (frontend; see `mobile/AGENTS.md`) |
-| `server/` | FastAPI backend: REST + one authenticated WebSocket per workout |
-| `supabase/` | Supabase config and SQL migrations (users, workouts, reps, coaching events) |
-| `tigerdata/` | Tiger Data (TimescaleDB) migration for the sensor time-series |
-| `docs/` | Message contracts, frontend guide, deployment, how to add an exercise |
+| [`mobile/`](mobile/) | Expo / React Native client (Expo Router, TypeScript). Currently the starter template. |
+| [`server/`](server/) | FastAPI backend: REST + WebSocket API and the squat rep counter. |
+| [`supabase/`](supabase/) | Postgres schema migration for Phase 2 persistence. Not applied to any project yet. |
+| [`docs/event-contracts.md`](docs/event-contracts.md) | Source of truth for REST and WebSocket message formats. |
 
-Two databases with separate jobs: **Supabase** holds accounts and the product data; **Tiger Data** holds the
-high-frequency sensor readings and answers time-series questions. Both share the workout's `session_id`.
+## How it works
 
-## Run the backend
+```
+ camera ─▶ MediaPipe Pose ─▶ knee angles ─ pose_update ─▶ FastAPI ── RepCounter
+ (planned)   (planned)                                      │  /ws/workouts/{session_id}
+                                                            ▼
+ client ◀── rep_completed / tracking_status / error ────────┤
+ client ◀── coaching_feedback (planned) ◀── Gemini API ◀────┘  (planned)
+```
+
+1. **Capture (planned):** [MediaPipe](https://ai.google.dev/edge/mediapipe) pose landmarks are
+   used to compute left and right knee angles (hip, knee, ankle) and a landmark confidence per
+   frame. The event contract already expects the client to send these angles, and to send `null`
+   for angles whose landmarks aren't visible.
+2. The client creates a session with `POST /api/workouts`.
+3. It opens `/ws/workouts/{session_id}` and sends `pose_update` frames (about 30 per second).
+4. The server runs a hysteresis state machine over the knee angles. It ignores low-confidence
+   frames, drops out-of-order frames, and discards reps faster than 800 ms as noise.
+5. Each counted rep produces a `rep_completed` message with `min_knee_angle_deg`, `descent_ms`,
+   `ascent_ms`, `duration_ms`, and `max_asymmetry_deg`.
+6. **Coaching (planned):** rep metrics are sent to the [Gemini API](https://ai.google.dev/gemini-api/docs),
+   which generates feedback (for example, "go deeper" or "left side is lagging") that is delivered
+   to the client as a `coaching_feedback` event. The rep count itself stays deterministic and never
+   depends on the model.
+
+Full message schemas are in [`docs/event-contracts.md`](docs/event-contracts.md). The Pydantic models
+are in `server/app/schemas/events.py`. Change both together. `coaching_feedback` isn't defined in
+the contract yet.
+
+## Getting started
+
+### Server
+
+Requires Python 3.11 or newer.
 
 ```bash
 cd server
 python -m venv .venv
-.venv/Scripts/python -m pip install -r requirements-dev.txt     # macOS/Linux: .venv/bin/python
-cp .env.example .env            # then fill in the keys: see SUPABASE_SETUP.md and TIGERDATA_SETUP.md
-.venv/Scripts/python -m pytest -q                                # offline tests; need no credentials
-.venv/Scripts/python -m scripts.dev_server                       # serves on all interfaces, port 8000
+.venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
+pip install -r requirements-dev.txt
+uvicorn app.main:app --reload
 ```
 
-Useful checks (each says what it needs): `scripts.check_db`, `scripts.check_tigerdata`, `scripts.e2e_live`,
-`scripts.e2e_exercises`, `scripts.e2e_tigerdata`, `scripts.e2e_delete`, `scripts.check_remote --base-url <url>`.
-The live ones use a throwaway user and clean up after themselves.
+The API is then at `http://127.0.0.1:8000`. Check `GET /health`, or open `/docs` for the
+interactive OpenAPI UI.
 
-## What works
+Run the tests:
 
-* Supabase login (JWT) on every API call; ownership enforced; row-level security on the tables.
-* Live workouts over a WebSocket: squat rep counting, rule-based coaching, pause / resume / **pain-stop**, ESP32 data
-  relay, reconnect takeover, flood and size limits.
-* 7 exercises can be logged (squat, push-up, pull-up, deadlift, bench press, lunge, plank). **Only squat is analyzed**
-  (reps counted, coached); the others are logged and their data recorded.
-* Workout history, per-workout summary, Tiger Data analytics, deleting a workout from both databases.
+```bash
+pytest
+```
 
-## What does not (yet)
+### Try it without a camera
 
-* The LLM coach, analysis for the non-squat exercises, ESP32 firmware and sensor calibration, anything validated on
-  real recordings (the squat thresholds are untuned guesses), a hosted deployment.
+With the server running, stream simulated squats against it from a second terminal:
 
-## Docs
+```bash
+cd server
+python -m app.simulation --reps 5
+```
 
-* `docs/frontend-integration.md`: how the mobile app connects (start here if you build the app)
-* `docs/event-contracts.md`: every REST endpoint and WebSocket message
-* `SUPABASE_SETUP.md`, `TIGERDATA_SETUP.md`: setting up the databases (with what is verified and what is not)
-* `docs/DEPLOYMENT.md`: running it somewhere other than a laptop
-* `docs/adding-an-exercise.md`, `AGENTS.md` (project spec and conventions)
+This sends **synthetic** pose data. It is not real camera or sensor output. The demo script also
+needs the `websockets` package, which `uvicorn[standard]` installs.
+
+### Mobile app
+
+Requires Node.js. See [`mobile/README.md`](mobile/README.md) for Expo details.
+
+```bash
+cd mobile
+npm install
+npx expo start
+```
+
+Then press `i` (iOS simulator), `a` (Android emulator), or `w` (web), or scan the QR code with a
+development build.
+
+Lint and type-check before committing:
+
+```bash
+npx expo lint
+npx tsc --noEmit
+```
+
+## Configuration
+
+`server/.env.example` lists the Supabase variables planned for Phase 2. **The code does not read
+them yet.** When persistence lands, copy it to `server/.env`. Keep `SUPABASE_SECRET_KEY` on the
+backend only and never ship it in the mobile app.
+
+The same applies to the Gemini API key. Once the AI layer is added, call Gemini from the server
+only, with the key in `server/.env` (for example `GEMINI_API_KEY`), and never embed it in the
+mobile app. That variable isn't in `.env.example` yet, so add it when the integration is built.
+
+## Roadmap
+
+- [x] Squat rep counting from knee angles over WebSocket
+- [x] Simulated pose stream for demos and tests
+- [ ] CV layer: MediaPipe pose capture and knee-angle computation on the client
+- [ ] Mobile live rep UI
+- [ ] AI layer: Gemini-generated coaching from rep metrics (`coaching_feedback` event)
+- [ ] Phase 2: Supabase auth (JWT validation, session ownership) and persistence
+- [ ] ESP32 `sensor_update` messages
+- [ ] `set_finished` event
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
