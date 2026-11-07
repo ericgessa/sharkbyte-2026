@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from typing import Annotated, Any
 from uuid import UUID
@@ -105,6 +106,22 @@ def list_exercises() -> list[dict[str, Any]]:
         }
         for e in all_exercises()
     ]
+
+
+@router.get("/api/config")
+def client_config() -> dict[str, str]:
+    """Public Supabase settings for the app's sign-in (both values are public by design). Never returns a secret key."""
+    url = os.environ.get("SUPABASE_URL", "").strip()
+    key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "").strip()
+    if key and (key.startswith("sb_secret_") or key == os.environ.get("SUPABASE_SECRET_KEY", "").strip()):
+        logger.error("SUPABASE_PUBLISHABLE_KEY holds a secret key; refusing to serve it")
+        key = ""
+    if not url or not key:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "client config unavailable: set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in server/.env",
+        )
+    return {"supabase_url": url, "supabase_publishable_key": key}
 
 
 @router.get("/health")

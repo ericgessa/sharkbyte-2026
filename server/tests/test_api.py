@@ -86,6 +86,31 @@ def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_client_config_serves_public_supabase_values_without_login(client, monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://proj.supabase.co")
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", "sb_publishable_abc")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "sb_secret_xyz")
+    r = client.get("/api/config")
+    assert r.status_code == 200
+    assert r.json() == {"supabase_url": "https://proj.supabase.co", "supabase_publishable_key": "sb_publishable_abc"}
+    assert "sb_secret_xyz" not in r.text
+
+
+@pytest.mark.parametrize("bad_key", ["sb_secret_oops", "same-as-secret"])
+def test_client_config_never_serves_a_secret_key(client, monkeypatch, bad_key):
+    monkeypatch.setenv("SUPABASE_URL", "https://proj.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "same-as-secret")
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", bad_key)
+    r = client.get("/api/config")
+    assert r.status_code == 503
+    assert bad_key not in r.text
+
+
+def test_client_config_is_503_when_not_configured(client, monkeypatch):
+    monkeypatch.delenv("SUPABASE_PUBLISHABLE_KEY", raising=False)
+    assert client.get("/api/config").status_code == 503
+
+
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Basic abc"}, {"Authorization": "Bearer nope"}])
 def test_rest_requires_a_valid_bearer_token(client, headers):
     assert client.post("/api/workouts", json={}, headers=headers).status_code == 401
