@@ -247,7 +247,7 @@ the honest talking points and a demo that can all be shown:
    index. The `timescaledb_information` queries above show chunks and compression.
 
 Not built (so don't claim them): continuous aggregates, retention policies, real sensor calibration, and any
-LLM calling these summaries yet (the AI coach itself isn't built).
+any LLM run on these summaries against a real model yet (the AI coach layer exists but has never been run live; `docs/AI_COACH.md`).
 
 ## Deleting data (privacy)
 

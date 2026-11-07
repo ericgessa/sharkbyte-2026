@@ -141,6 +141,11 @@ so don't show a live rep counter or promise coaching for them; show something li
 and pause work for every exercise. Don't try to count reps client-side and send them: the API has no way to accept
 them. A wrong exercise name is a 422 whose message lists the valid ones.
 
+**End-of-workout recap.** `GET /api/workouts/{id}/coach-summary` returns `{ summary, source }`: a few plain sentences
+about the workout, ready to show under the stats. `source` is `"agent"` when an LLM wrote it and `"rules"` for the
+deterministic version (either is fine to show as-is). Call it once when the workout ends and cache it client-side; it is
+limited to about 6 requests per minute.
+
 Screens you can build from the other read endpoints (response shapes in [event-contracts.md](event-contracts.md)):
 
 ```ts
@@ -194,7 +199,9 @@ Rules that matter:
   of the two must be present. Don't guess angles for hidden joints.
 - `landmark_confidence` 0-1; below 0.6 the frame is ignored and you get one `tracking_status: lost`
   (then `recovered`). Use that to show "step back so we can see your legs".
-- Show `coaching_feedback.message` as-is (text and/or speech). It is rate-limited server-side.
+- Show `coaching_feedback.message` as-is (text and/or speech). It is rate-limited server-side. When the server's AI
+  coach is on, a cue can arrive a few seconds after its `rep_completed` (or not at all); don't wait for it before
+  updating the rep count.
 - **ESP32 data:** if the phone talks to the wearable over Bluetooth, forward each sample over this same socket
   (no separate endpoint or credentials): `ws.send(JSON.stringify({ schema_version: 1, type: 'sensor_update',
   session_id: sessionId, device_id: 'esp32-01', sequence: n++, timestamp_ms: deviceMillis, data: { flex_raw, imu_pitch_deg } }))`.
@@ -224,6 +231,46 @@ different Wi-Fi, firewall, or Wi-Fi client isolation), not an app bug.
 The backend dev can also check the server end to end the way the app uses it (real sign-in, REST, WebSocket,
 simulated squats, clearly synthetic): `python -m scripts.check_remote --base-url <API URL>` from `server/`.
 `python -m scripts.e2e_live` does the same in-process, without a running server.
+
+## 6. MediaPipe pose tracking in the browser (Pose lab)
+
+`mobile/src/pose/` turns camera frames into the `pose_update` messages of section 4, and `/pose` is a developer
+page that wires it all together (camera, skeleton overlay, backend, coaching cues). **Web only for now**; on a
+phone the screen says so (native camera + MediaPipe is not built).
+
+```bash
+cd mobile
+npm ci
+npx expo start --web        # then open http://localhost:8081/pose
+```
+
+What it does: loads MediaPipe's Pose Landmarker **in the browser** (nothing leaves the device), computes joint
+angles from the 3D world landmarks (`angles.ts`: knees, elbows, hips, `null` when a joint is not visible, plus a
+`landmark_confidence`), numbers and rate-limits the frames to 30/s (`protocol.ts`), and streams them over the
+authenticated WebSocket (`workout-client.ts`). Paste a Supabase **access token** (section 2) and the API URL into
+the lab, then *Start workout*. The same code is reusable in the real screens; the lab is just the harness.
+
+Things to know:
+
+- **Needs internet.** The library (`cdn.jsdelivr.net`), the WebAssembly runtime and the ~6 MB model
+  (`storage.googleapis.com`) are fetched by the browser at runtime. They are not bundled because Metro cannot
+  bundle `@mediapipe/tasks-vision` (it contains `import(<expression>)`); the npm package is only used for types.
+  The version is pinned in `package.json` and in `mediapipe.web.ts` (a test checks they agree).
+- **Camera needs a secure context:** `http://localhost` or `https://`. Opening the dev server by LAN IP over plain
+  `http://` will not get camera access; use localhost or an HTTPS tunnel.
+- **No camera?** *Simulate 5 squats* streams synthetic angles through the same path, and *Detect pose in image*
+  runs the real model on a still image (the host must allow CORS, e.g. `upload.wikimedia.org`).
+- **Route registration:** with `expo-router/ui` Tabs, a route only works if it has a `TabTrigger`. `/pose` has a
+  hidden one in `src/components/app-tabs.web.tsx` (no visible tab). Without it the router bounces `/pose` to `/`.
+  Any new non-tab page on web needs the same.
+- Don't start the dev server with `CI=1`: that disables file watching, so edits are silently not served.
+- Tests: `npm run test:pose` (27 pure-logic tests, no browser). The backend suite also runs the TypeScript
+  (`server/tests/test_frontend_contract.py`) and checks that what it produces is accepted by the real server.
+
+Verified so far: model loads in a browser (GPU delegate), real inference on a still image returns angles, and the
+simulated stream through the lab reaches the live backend (5 reps counted, the depth cue comes back). **Not
+verified:** a live camera with a person moving, accuracy of the angles against real squats, mobile devices,
+frame-rate on slower machines.
 
 ## Troubleshooting
 

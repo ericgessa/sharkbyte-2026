@@ -176,6 +176,22 @@ class TigerStore:
         except Exception as exc:
             raise TigerDataError(f"delete failed: {type(exc).__name__}") from None
 
+    def delete_sessions_readings(self, session_ids: Sequence[Any]) -> int:
+        """Delete every reading of several workouts (used when a whole account is deleted). Returns rows removed."""
+        ids = list(session_ids)
+        removed = 0
+        try:
+            with self._get_pool().connection() as conn:
+                with conn.cursor() as cur:
+                    for i in range(0, len(ids), 500):  # chunked so one statement never gets enormous
+                        cur.execute("delete from sensor_readings where session_id = any(%s)", (ids[i : i + 500],))
+                        removed += max(cur.rowcount, 0)
+            return removed
+        except TigerDataConfigError:
+            raise
+        except Exception as exc:
+            raise TigerDataError(f"delete failed: {type(exc).__name__}") from None
+
     # ------------------------------------------------------------------ reads
 
     def query(self, sql: str, params: Any = None, timeout_ms: int = DEFAULT_QUERY_TIMEOUT_MS) -> list[dict[str, Any]]:

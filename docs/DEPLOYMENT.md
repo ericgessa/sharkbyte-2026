@@ -1,9 +1,15 @@
 # Running the backend somewhere other than your laptop
 
-**Status: nothing here has been deployed or built.** The `Dockerfile` has never been built (Docker would not start
-on the dev machine) and no hosting account has been used. What *is* verified: the app starts with
-`uvicorn app.main:app`, the offline test suite passes with no credentials, and `/health` answers. Treat the steps
-below as a checklist to try, and fix what breaks.
+**Status: the image has been built and run locally, but nothing has been deployed to a host.** On 2026-11-07 the
+`Dockerfile` was built and the container run with the real `.env` (local only). Checked: it starts, runs as a
+non-root user, `/health` and `/health/ready` answer (Supabase and Tiger Data both reported `ok` from inside the
+container), Docker's own healthcheck turned `healthy`, `python -m scripts.check_remote --base-url
+http://localhost:8001` passed against it (sign-in, REST, WebSocket, 5 simulated reps, coaching cue, finish, summary,
+history, pain stop), and `docker stop` shut it down in about a second with exit code 0. With no configuration at all
+the container exits at startup rather than serving. **Not checked:** the exact startup error text without
+configuration, a real hosting platform (Render, Fly.io, ...), HTTPS/`wss://` through a platform proxy, behaviour under
+the platform's idle timeouts, and the GitHub Actions workflow. Dependencies are version floors, not pins, so a later
+build may pull newer packages than the ones tested.
 
 ## Do you need this?
 

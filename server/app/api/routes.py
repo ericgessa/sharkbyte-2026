@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -10,9 +11,10 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
-from app.schemas.events import CreateWorkoutRequest, StatsOut, WorkoutOut, WorkoutSummaryOut
+from app.schemas.events import CreateWorkoutRequest, DeleteAccountRequest, StatsOut, WorkoutOut, WorkoutSummaryOut
 from app.services import persistence
 from app.services.exercises import DEFAULT_EXERCISE, all_exercises, for_stored_name
+from app.services.agent import rules_summary
 from app.services.analytics import readings_in_window
 from app.services.coach_context import build_coach_context
 from app.services.summary import compute_stats
@@ -107,7 +109,40 @@ def list_exercises() -> list[dict[str, Any]]:
 
 @router.get("/health")
 def health() -> dict[str, str]:
+    """Liveness: the process is up. Cheap, no dependencies. Use this for a platform's restart check."""
     return {"status": "ok"}
+
+
+@router.get("/health/ready")
+async def ready(request: Request, response: Response) -> dict[str, Any]:
+    """Readiness: can this instance do its job? Supabase is required (503 if unreachable); Tiger Data is optional
+    (reported, but never makes the instance unready, since workouts work without it). Public and unauthenticated,
+    so it returns only booleans/labels, and the result is cached for a few seconds so it can't be used to hammer
+    the databases."""
+    state = request.app.state
+    ttl = getattr(state, "ready_ttl_s", 10.0)
+    cached = getattr(state, "_ready_cache", None)
+    now = time.monotonic()
+    if cached is None or now - cached[0] >= ttl:
+        supabase_ok = bool(await asyncio.to_thread(state.store.ping))
+        if not state.tiger.configured:
+            tiger = "not_configured"
+        else:
+            try:
+                await asyncio.to_thread(state.tiger.query, "select 1 as ok")
+                tiger = "ok"
+            except Exception:
+                tiger = "unavailable"
+        body = {
+            "status": "ok" if supabase_ok else "unavailable",
+            "supabase": "ok" if supabase_ok else "unavailable",
+            "tiger_data": tiger,
+            "sensor_writes": "healthy" if state.ingest.stats.healthy else "failing",
+        }
+        cached = state._ready_cache = (now, body)
+    if cached[1]["supabase"] != "ok":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return cached[1]
 
 
 @router.post("/api/workouts", response_model=WorkoutOut, status_code=status.HTTP_201_CREATED)
@@ -170,6 +205,57 @@ async def delete_workout(session_id: UUID, request: Request, user_id: UserId) ->
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/api/account/delete", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_account(body: DeleteAccountRequest, request: Request, user_id: UserId) -> Response:
+    """Permanently delete YOUR account and everything in it, from both databases.
+
+    Body must be exactly ``{"confirm": "delete my account"}``. This removes the login, the profile, every workout
+    with its reps and coaching events (Supabase) and all of your sensor readings (Tiger Data). There is no undo.
+    Tiger Data goes first; if it is configured but unreachable nothing is deleted (503, safe to retry). Any
+    workout that is streaming right now is closed. 204 on success; the token stops working immediately.
+    """
+    state = request.app.state
+    live_sessions = state.live.for_user(user_id)
+    for live in live_sessions:
+        live.finished = True  # stop any open socket from adding data
+        if live.socket is not None:
+            with contextlib.suppress(Exception):
+                await live.socket.close(code=4409)
+        if live.save_tasks:
+            await asyncio.gather(*live.save_tasks, return_exceptions=True)
+
+    session_ids = await asyncio.to_thread(state.store.list_all_session_ids, user_id)
+    if state.tiger.configured:
+        try:
+            if not await state.ingest.flush(timeout_s=5.0):
+                raise RuntimeError("buffered readings could not be flushed")
+            await asyncio.to_thread(state.tiger.delete_sessions_readings, session_ids)
+        except Exception:
+            for live in live_sessions:
+                live.finished = False  # nothing was deleted: workouts stay usable
+            logger.warning("account deletion aborted for user %s: Tiger Data unavailable", user_id)
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "could not delete your sensor data right now; nothing was deleted, try again"
+            ) from None
+
+    try:
+        await asyncio.to_thread(state.store.delete_account, user_id)
+    except Exception:
+        logger.exception("account deletion: Supabase step failed for user %s", user_id)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "your sensor data was deleted but the account could not be removed right now; please try again",
+        ) from None
+
+    for live in live_sessions:
+        state.live.remove(live.session_id)
+    invalidate = getattr(state.auth, "invalidate_user", None)
+    if invalidate:
+        invalidate(user_id)  # the deleted user's token must stop working at once, not after the cache expires
+    logger.info("account deleted user=%s workouts=%d", user_id, len(session_ids))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/api/workouts/{session_id}/analytics")
 def workout_analytics(session_id: UUID, request: Request, user_id: UserId) -> dict[str, Any]:
     """Compact analytics for one workout: Supabase facts plus Tiger Data time-series summaries.
@@ -180,6 +266,39 @@ def workout_analytics(session_id: UUID, request: Request, user_id: UserId) -> di
     state = request.app.state
     _owned_session(request, session_id, user_id)
     return build_coach_context(state.store, state.tiger, session_id)
+
+
+@router.get("/api/workouts/{session_id}/coach-summary")
+async def coach_summary(session_id: UUID, request: Request, user_id: UserId) -> dict[str, Any]:
+    """A short plain-language recap of a workout, from both databases.
+
+    ``source`` is ``"agent"`` when the LLM coach wrote it and ``"rules"`` for the deterministic recap (the LLM is
+    off, unavailable, failed a safety check, or the user reported pain: then it is always the rules text).
+    Recaps of finished workouts are cached. Limited to a few per minute per user because each can cost an LLM call.
+    """
+    state = request.app.state
+    if not state.summary_limiter.allow(user_id):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "too many recap requests; slow down", {"Retry-After": str(state.summary_limiter.retry_after_s)}
+        )
+    row = await asyncio.to_thread(_owned_session, request, session_id, user_id)
+    key = str(session_id)
+    if key in state.summary_cache:
+        text, source = state.summary_cache[key]
+        return {"summary": text, "source": source}
+
+    context = await asyncio.to_thread(build_coach_context, state.store, state.tiger, session_id)
+    exercise = for_stored_name((row.get("exercises") or {}).get("name", DEFAULT_EXERCISE))
+    fallback = rules_summary(context, exercise.analysis_supported, exercise.display_name.lower(), exercise.joint)
+    if exercise.llm_supported:
+        text, source = await state.agent.summarize(context, fallback)
+    else:  # the LLM layer only knows knee wording so far: other exercises get the deterministic recap
+        text, source = fallback, "rules"
+    if row["status"] == "completed":  # an active workout's recap would go stale
+        state.summary_cache[key] = (text, source)
+        while len(state.summary_cache) > 200:
+            state.summary_cache.popitem(last=False)
+    return {"summary": text, "source": source}
 
 
 @router.get("/api/workouts/{session_id}/readings")

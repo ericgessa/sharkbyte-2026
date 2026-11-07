@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import OrderedDict
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -12,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import routes, websocket
+from app.services.agent import agent_from_env
 from app.services.auth import SupabaseAuth
 from app.services.database import DatabaseConfigError, SupabaseStore
 from app.services.ingest import SensorIngestor
@@ -41,6 +43,7 @@ def create_app(
     auth: Any = None,
     timeseries: Any = None,
     ingest: Any = None,
+    agent: Any = None,
     idle_ttl_s: float = DEFAULT_IDLE_TTL_S,
     sweep_interval_s: float = DEFAULT_SWEEP_INTERVAL_S,
 ) -> FastAPI:
@@ -65,6 +68,7 @@ def create_app(
             with contextlib.suppress(asyncio.CancelledError):
                 await sweeper
             await ingestor.stop()  # last best-effort flush
+            await application.state.agent.aclose()
             close = getattr(tiger, "close", None)
             if close:
                 close()
@@ -82,6 +86,9 @@ def create_app(
     app.state.tiger = tiger
     app.state.ingest = ingestor
     app.state.live = LiveSessions()
+    app.state.agent = agent if agent is not None else agent_from_env()  # LLM coach; rules-only unless configured
+    app.state.summary_cache = OrderedDict()  # finished workouts' recaps (immutable, so cacheable)
+    app.state.summary_limiter = KeyedLimiter(rate_per_s=6 / 60, burst=3)  # recaps can cost an LLM call
     # Per-user request limits (generous for a real app; stops a runaway client or a script from hammering the
     # backend and, through it, Supabase). Tests and deployments can replace these on app.state.
     app.state.rest_limiter = KeyedLimiter(rate_per_s=REST_RATE_PER_S, burst=REST_BURST)

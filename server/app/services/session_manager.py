@@ -36,7 +36,7 @@ DEFAULT_SWEEP_INTERVAL_S = 60.0
 class LiveSession:
     session_id: UUID
     user_id: str
-    counter: Any  # SquatRepCounter, or NoopRepCounter for exercises without analysis
+    counter: Any  # SquatRepCounter / PushUpRepCounter, or NoopRepCounter for exercises without analysis
     exercise: Exercise | None = None
     coach: RuleCoach = field(default_factory=RuleCoach)
     clock: ClockAnchors = field(default_factory=ClockAnchors)  # device/camera clocks -> server time
@@ -44,6 +44,8 @@ class LiveSession:
     pending_writes: list[Write] = field(default_factory=list)
     # Background saves in flight; finishing waits for these so no rep is missed.
     save_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    # Coaching cues being worded by the LLM in the background (never awaited by finish: they just drop if too late).
+    agent_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     finished: bool = False
     paused: bool = False  # frames are ignored while paused
     pain_reported: bool = False
@@ -67,12 +69,17 @@ class LiveSessions:
         live = self._live.get(session_id)
         if live is None:
             exercise = exercise or find(DEFAULT_EXERCISE)
-            live = LiveSession(session_id, user_id, exercise.make_counter(saved_reps), exercise=exercise)
+            live = LiveSession(
+                session_id, user_id, exercise.make_counter(saved_reps), exercise=exercise, coach=RuleCoach(joint=exercise.joint)
+            )
             self._live[session_id] = live
         return live
 
     def remove(self, session_id: UUID) -> None:
         self._live.pop(session_id, None)
+
+    def for_user(self, user_id: str) -> list[LiveSession]:
+        return [s for s in self._live.values() if s.user_id == user_id]
 
     def __len__(self) -> int:
         return len(self._live)

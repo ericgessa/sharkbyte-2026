@@ -3,8 +3,8 @@
     python -m scripts.e2e_exercises        (run from server/)
 
 Throwaway user -> a workout for EVERY registered exercise (using sloppy spellings) through the real app
-and real Supabase -> checks the exercise rows were created on first use, squat still counts and saves
-reps, and non-squat workouts are logged but get no counted reps or coaching. Deletes the user afterwards.
+and real Supabase -> checks the exercise rows were created on first use, squat and push-up count and save
+reps, and the other exercises are logged but get no counted reps or coaching. Deletes the user afterwards.
 
 Note: the exercise ROWS it creates in the ``exercises`` table are kept on purpose; they are reference data
 the app would create on first use anyway.
@@ -25,9 +25,10 @@ from supabase import create_client
 from app.main import create_app
 from app.services import exercises as ex
 from app.services.database import DatabaseConfigError, get_client
-from app.simulation import squat_messages
+from app.simulation import pushup_messages, squat_messages
 from scripts._cleanup import arm_watchdog, purge_tiger_readings
 
+ANALYZED = {"squat", "push-up"}  # exercises with a rep counter; everything else is logged only
 SPELLINGS = {"squat": "Squats", "push-up": "Push Up", "pull-up": "pullup", "deadlift": "DEAD LIFT",
              "bench-press": "bench_press", "lunge": "lunges", "plank": "PLANK"}
 results: list[tuple[str, bool]] = []
@@ -67,7 +68,7 @@ def main() -> int:
 
             for slug, spelling in SPELLINGS.items():
                 r = client.post("/api/workouts", json={"exercise": spelling}, headers=h)
-                ok = r.status_code == 201 and r.json()["exercise"] == slug and r.json()["analysis_supported"] is (slug == "squat")
+                ok = r.status_code == 201 and r.json()["exercise"] == slug and r.json()["analysis_supported"] is (slug in ANALYZED)
                 check(f"create workout for {spelling!r} -> canonical {slug!r}", ok, r.text[:120])
                 if r.status_code == 201:
                     sessions[slug] = r.json()["session_id"]
@@ -75,7 +76,7 @@ def main() -> int:
             rows = {r["name"]: r["config"] for r in admin.table("exercises").select("name,config").execute().data}
             check("Supabase has an exercises row for every exercise", set(SPELLINGS) <= set(rows))
             check("squat's seeded config was left untouched", rows.get("squat", {}).get("bottom_deg") == 110)
-            check("new rows say honestly that analysis is not supported", all(rows[s]["analysis_supported"] is False for s in SPELLINGS if s != "squat" and s in rows))
+            check("rows for exercises without a counter say honestly that analysis is not supported", all(rows[s]["analysis_supported"] is False for s in SPELLINGS if s not in ANALYZED and s in rows))
 
             # squat: unchanged behavior
             sid = sessions["squat"]
@@ -88,9 +89,23 @@ def main() -> int:
             check("squat: analysis on, 3 reps counted", ready["analysis_supported"] is True and [e["rep_count"] for e in evs] == [1, 2, 3])
             check("squat: finish saves 3 reps", client.post(f"/api/workouts/{sid}/finish", headers=h).json()["total_reps"] == 3)
 
+            # push-up: elbow angles are counted and saved
+            sid = sessions["push-up"]
+            with client.websocket_connect(f"/ws/workouts/{sid}") as ws:
+                ws.send_text(json.dumps({"schema_version": 1, "type": "auth", "access_token": token}))
+                ready = ws.receive_json()
+                for m in pushup_messages(sid, reps=3):
+                    ws.send_text(json.dumps(m))
+                evs = [ws.receive_json() for _ in range(3)]
+            check("push-up: analysis on, 3 reps counted from elbow angles",
+                  ready["analysis_supported"] is True and [e["rep_count"] for e in evs] == [1, 2, 3] and evs[0]["metrics"]["joint"] == "elbow")
+            check("push-up: finish saves 3 reps", client.post(f"/api/workouts/{sid}/finish", headers=h).json()["total_reps"] == 3)
+            saved_metrics = admin.table("repetitions").select("metrics").eq("session_id", sid).execute().data
+            check("push-up: the saved reps carry the elbow metrics", len(saved_metrics) == 3 and all(r["metrics"].get("joint") == "elbow" for r in saved_metrics))
+
             # every other exercise: logged, not analyzed
             for slug, sid in sessions.items():
-                if slug == "squat":
+                if slug in ANALYZED:
                     continue
                 with client.websocket_connect(f"/ws/workouts/{sid}") as ws:
                     ws.send_text(json.dumps({"schema_version": 1, "type": "auth", "access_token": token}))

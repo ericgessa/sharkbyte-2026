@@ -21,7 +21,8 @@ from app.schemas.events import (
     incoming_adapter,
 )
 from app.schemas.sensors import SensorUpdate
-from app.services.coaching import ACTION_RECOMMEND_REST, PAIN_ISSUE_CODE, PAIN_MESSAGE
+from app.services.agent import CoachAgent, build_cue_context
+from app.services.coaching import ACTION_RECOMMEND_REST, PAIN_ISSUE_CODE, PAIN_MESSAGE, CoachingDecision
 from app.services.exercises import DEFAULT_EXERCISE, for_stored_name
 from app.services import persistence
 from app.services.ingest import pose_readings, sensor_readings
@@ -59,7 +60,9 @@ async def _send(ws: WebSocket, event: BaseModel) -> None:
 
 def _metrics_dict(r: RepMetrics) -> dict:
     return {
-        "min_knee_angle_deg": r.min_knee_angle_deg,
+        "min_knee_angle_deg": r.min_angle_deg if r.joint == "knee" else None,
+        "min_angle_deg": r.min_angle_deg,
+        "joint": r.joint,
         "descent_ms": r.descent_ms,
         "ascent_ms": r.ascent_ms,
         "duration_ms": r.duration_ms,
@@ -140,6 +143,51 @@ async def _authenticate(ws: WebSocket, session_id: UUID) -> LiveSession | None:
         if any(e.get("issue_code") == PAIN_ISSUE_CODE for e in events):
             live.pain_reported, live.coach.enabled = True, False
     return live
+
+
+async def _deliver_coaching(ws: WebSocket, live: LiveSession, decision: CoachingDecision) -> None:
+    """Send one coaching cue to the app and save it (the same record whether rules or the LLM worded it)."""
+    await _send(
+        ws,
+        CoachingFeedback(
+            session_id=live.session_id,
+            rep_count=decision.rep_number,
+            issue_code=decision.issue_code,
+            message=decision.message,
+            source=decision.source,  # "rules" or "agent"
+        ),
+    )
+    _persist(
+        ws,
+        live,
+        (
+            persistence.COACHING_EVENT,
+            (live.session_id, decision.event_id, decision.rep_number, decision.issue_code, decision.message, decision.action),
+        ),
+    )
+
+
+def _spawn_agent_delivery(ws: WebSocket, live: LiveSession, decision: CoachingDecision, agent: CoachAgent) -> None:
+    """Let the LLM word (or suppress) a cue the rules already decided on, without blocking the live loop.
+
+    Whatever goes wrong inside, the user still gets the rule message (``agent.refine`` falls back). Because the
+    model takes a moment, the situation is re-checked before sending: never coach after a pain report or a finish.
+    """
+
+    async def run() -> None:
+        try:
+            context = build_cue_context(live.exercise.slug, live.coach.reps, decision, live.coach.history, live.coach.config)
+            final = await agent.refine(decision, context)
+            target = live.socket  # the app may have reconnected while we waited: deliver to the current connection
+            if final is None or target is None or live.pain_reported or live.finished:
+                return
+            await _deliver_coaching(target, live, final)
+        except Exception:
+            logger.exception("coaching delivery failed; the rep count is unaffected")
+
+    task = asyncio.create_task(run())
+    live.agent_tasks.add(task)
+    task.add_done_callback(live.agent_tasks.discard)
 
 
 async def _take_over(ws: WebSocket, live: LiveSession) -> None:
@@ -279,6 +327,8 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                     confidence=d.landmark_confidence,
                     left_knee_deg=d.left_knee_angle_deg,
                     right_knee_deg=d.right_knee_angle_deg,
+                    left_elbow_deg=d.left_elbow_angle_deg,
+                    right_elbow_deg=d.right_elbow_angle_deg,
                 )
             )
 
@@ -301,23 +351,11 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
 
                 decision = live.coach.observe(r)
                 if decision is not None:
-                    await _send(
-                        ws,
-                        CoachingFeedback(
-                            session_id=session_id,
-                            rep_count=decision.rep_number,
-                            issue_code=decision.issue_code,
-                            message=decision.message,
-                        ),
-                    )
-                    _persist(
-                        ws,
-                        live,
-                        (
-                            persistence.COACHING_EVENT,
-                            (session_id, decision.event_id, decision.rep_number, decision.issue_code, decision.message, decision.action),
-                        ),
-                    )
+                    agent = ws.app.state.agent
+                    if agent.enabled and live.exercise is not None and live.exercise.llm_supported:
+                        _spawn_agent_delivery(ws, live, decision, agent)  # background: counting never waits on the LLM
+                    else:
+                        await _deliver_coaching(ws, live, decision)
     except WebSocketDisconnect:
         logger.info("ws disconnected session=%s", session_id)
     finally:

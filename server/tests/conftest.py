@@ -20,6 +20,7 @@ except app.services.timeseries.TigerDataConfigError:
 def _hide_real_tigerdata(monkeypatch):
     monkeypatch.delenv("TIGERDATA_URL", raising=False)
     monkeypatch.delenv("TIGERDATA_PASSWORD", raising=False)
+    monkeypatch.delenv("COACH_LLM_PROVIDER", raising=False)  # a developer's .env must never make tests call a real LLM
 
 
 @pytest.fixture(autouse=True)

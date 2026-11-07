@@ -32,11 +32,18 @@ MESSAGES = {
 }
 
 
+def messages_for(joint: str) -> dict[str, str]:
+    """The cue texts for the joint being counted ("knee" is the default MESSAGES; elbows swap the body part)."""
+    if joint == "knee":
+        return MESSAGES
+    return {code: text.replace("knees", f"{joint}s") for code, text in MESSAGES.items()}
+
+
 @dataclass(frozen=True)
 class CoachConfig:
     baseline_reps: int = 3  # early reps that define "your normal depth"
-    depth_loss_deg: float = 10.0  # knee angle this much higher than baseline = shallower
-    asymmetry_deg: float = 15.0  # left/right knee difference worth mentioning
+    depth_loss_deg: float = 10.0  # joint angle this much higher than baseline = shallower
+    asymmetry_deg: float = 15.0  # left/right difference worth mentioning
     consecutive: int = 2  # the issue must show in this many reps in a row
     min_reps_between_messages: int = 2
     same_issue_cooldown_reps: int = 4
@@ -63,11 +70,14 @@ PAIN_MESSAGE = (
 
 
 class RuleCoach:
-    def __init__(self, config: CoachConfig | None = None) -> None:
+    def __init__(self, config: CoachConfig | None = None, joint: str = "knee") -> None:
         self.config = config or CoachConfig()
+        self.joint = joint
+        self._messages = messages_for(joint)
         # False after the user reports pain: no more technique coaching this session.
         self.enabled = True
         self.reps: list[RepMetrics] = []
+        self.history: list[tuple[int, str]] = []  # (rep_number, issue_code) of cues given
         self.messages_sent = 0
         self._last_message_rep: int | None = None
         self._last_rep_by_issue: dict[str, int] = {}
@@ -82,7 +92,8 @@ class RuleCoach:
                 self.messages_sent += 1
                 self._last_message_rep = rep.rep_number
                 self._last_rep_by_issue[issue] = rep.rep_number
-                return CoachingDecision(rep.rep_number, issue, MESSAGES[issue])
+                self.history.append((rep.rep_number, issue))
+                return CoachingDecision(rep.rep_number, issue, self._messages[issue])
         return None
 
     # ------------------------------------------------------------------ internals
@@ -95,10 +106,10 @@ class RuleCoach:
         found: list[str] = []
 
         if len(self.reps) > cfg.baseline_reps:  # need a baseline plus at least one more rep
-            baseline = statistics.median(r.min_knee_angle_deg for r in self.reps[: cfg.baseline_reps])
+            baseline = statistics.median(r.min_angle_deg for r in self.reps[: cfg.baseline_reps])
             # The recent reps must all be after the baseline window.
             if all(r.rep_number > cfg.baseline_reps for r in recent) and all(
-                r.min_knee_angle_deg - baseline >= cfg.depth_loss_deg for r in recent
+                r.min_angle_deg - baseline >= cfg.depth_loss_deg for r in recent
             ):
                 found.append("reduced_depth")
 

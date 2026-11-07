@@ -151,3 +151,101 @@ def test_reset_tracking_discards_partial_rep_and_requires_standing_again():
     # ...but the next full squat counts normally.
     reps, _ = feed(c, squat_messages(uuid4(), reps=1, start_sequence=50, start_ts=200_000))
     assert len(reps) == 1 and c.rep_count == 1
+
+
+# --------------------------------------------------------------------------------------------------
+# Adaptive standing threshold: people who read below 160 deg upright must still get their reps counted.
+# --------------------------------------------------------------------------------------------------
+import math  # noqa: E402
+import random  # noqa: E402
+
+
+def noisy_squats(standing, reps=6, sigma=2.0, depth=90.0, seed=0, rest_frames=15):
+    """Synthetic knee-angle samples (both knees, independent camera jitter) for `reps` squats from `standing`."""
+    rnd = random.Random(seed)
+    out, seq, ts = [], 0, 1_000_000
+
+    def push(angle):
+        nonlocal seq, ts
+        out.append(PoseSample(seq, ts, 0.95, angle + rnd.gauss(0, sigma), angle + rnd.gauss(0, sigma)))
+        seq += 1
+        ts += 33
+
+    for _ in range(rest_frames):
+        push(standing)
+    steps = 2400 // 33
+    for _ in range(reps):
+        for i in range(1, steps + 1):
+            push(standing - (standing - depth) * 0.5 * (1 - math.cos(2 * math.pi * i / steps)))
+        for _ in range(12):
+            push(standing)
+    return out
+
+
+def run(counter, samples):
+    for s in samples:
+        counter.update(s)
+    return counter
+
+
+def test_someone_standing_at_156_degrees_is_counted_not_ignored():
+    # Before adaptation the counter never armed (needs >= 160) and silently counted nothing.
+    c = run(SquatRepCounter(), noisy_squats(standing=156, reps=6, sigma=0.0))
+    assert c.rep_count == 6
+    assert c.standing_threshold_deg < 160.0
+
+
+def test_adaptive_standing_survives_camera_jitter_across_many_seeds():
+    for standing in (158, 154, 150):
+        for seed in range(15):
+            c = run(SquatRepCounter(), noisy_squats(standing, reps=6, sigma=3.0, seed=seed))
+            assert c.rep_count == 6, (standing, seed, c.rep_count)
+
+
+def test_normal_standing_keeps_the_configured_thresholds_exactly():
+    c = run(SquatRepCounter(), noisy_squats(standing=172, reps=5, sigma=2.0))
+    assert c.rep_count == 5
+    assert c.standing_threshold_deg == SquatConfig().standing_deg  # never lowered, never raised
+
+
+def test_adaptation_can_be_turned_off():
+    c = run(SquatRepCounter(SquatConfig(adaptive_standing=False)), noisy_squats(standing=156, reps=4, sigma=0.0))
+    assert c.rep_count == 0 and c.phase is SquatPhase.UNARMED
+
+
+def test_standing_below_the_floor_is_not_adapted_to():
+    # 140 deg "standing" is a half squat held still, not a person standing: do not lower the bar that far.
+    c = run(SquatRepCounter(), noisy_squats(standing=140, reps=4, sigma=0.0))
+    assert c.rep_count == 0
+    assert c.standing_threshold_deg == SquatConfig().standing_deg
+
+
+def test_movement_never_lowers_the_threshold_only_stillness_does():
+    # Large swings around 152 deg (std ~10) are movement, not a resting position.
+    rnd = random.Random(3)
+    c = SquatRepCounter()
+    for i in range(300):
+        a = 152 + 15 * math.sin(i / 3) + rnd.gauss(0, 2)
+        c.update(PoseSample(i, 1_000_000 + i * 33, 0.95, a, a))
+    assert c.standing_threshold_deg == SquatConfig().standing_deg
+    assert c.rep_count == 0
+
+
+def test_fidgeting_without_a_real_squat_never_counts_a_rep():
+    for lo, hi in ((140, 165), (120, 165), (150, 175)):
+        for seed in range(10):
+            rnd = random.Random(seed)
+            c, a = SquatRepCounter(), 165.0
+            for i in range(900):  # 30 s of random-walk knee movement
+                a = min(hi, max(lo, a + rnd.gauss(0, 2.5)))
+                c.update(PoseSample(i, 1_000_000 + i * 33, 0.95, a, a))
+            assert c.rep_count == 0, (lo, hi, seed)
+
+
+def test_gap_and_pause_clear_the_stillness_window():
+    c = SquatRepCounter()
+    for i in range(9):  # one frame short of a full window at 152 deg
+        c.update(PoseSample(i, 1_000_000 + i * 33, 0.95, 152.0, 152.0))
+    c.reset_tracking()  # a pause: the earlier frames must not count towards stillness
+    c.update(PoseSample(9, 1_000_000 + 9 * 33, 0.95, 152.0, 152.0))
+    assert c.phase is SquatPhase.UNARMED and c.standing_threshold_deg == SquatConfig().standing_deg

@@ -8,18 +8,19 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 
 ## REST
 
-| Method | Path                                                                             | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ------ | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/health`                                                                        | `{"status":"ok"}` (no auth)                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| GET    | `/api/exercises`                                                                 | 200 list of supported exercises (**no login needed**): `slug`, `display_name`, `aliases`, `analysis_supported`, `primary_angles`. Build the exercise picker from this                                                                                                                                                                                                                                                                                                  |
-| POST   | `/api/workouts`                                                                  | body `{"exercise":"<any spelling>"}` (optional; defaults to `"squat"`) → 201 `WorkoutOut`. Unknown exercise → 422 listing the supported ones                                                                                                                                                                                                                                                                                                                           |
-| GET    | `/api/workouts?limit=20`                                                         | 200 list of your `WorkoutOut`, newest first (`limit` 1-100)                                                                                                                                                                                                                                                                                                                                                                                                            |
-| GET    | `/api/workouts/{session_id}`                                                     | 200 `WorkoutOut`, or 404                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| DELETE | `/api/workouts/{session_id}`                                                     | **Permanently** deletes the workout from both databases: its reps and coaching events (Supabase) and its sensor readings (Tiger Data). 204 on success; 404 if it is not yours or does not exist (so deleting twice is a 404); 503 if sensor data could not be deleted right now, in which case **nothing** was deleted and it is safe to retry. A socket that is still streaming that workout is closed with `4409`. There is no undo, so the app should confirm first |
-| GET    | `/api/workouts/{session_id}/summary`                                             | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far)                                                                                                                                                                                                                                                                                                                                                                                      |
-| GET    | `/api/workouts/{session_id}/analytics`                                           | 200 compact analytics: `supabase` (rep stats, coaching events) + `timeseries` (SQL summaries from Tiger Data, per-rep depth/range trends). `timeseries.available` is `false` with a `reason` (`not_configured` / `unavailable`) when Tiger Data is off or down                                                                                                                                                                                                         |
-| GET    | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window                                                                                                                                                                                                                                                            |
-| POST   | `/api/workouts/{session_id}/finish`                                              | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry)                                                                                                                                                                                                                                                                                                                                                                                 |
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/health` | `{"status":"ok"}` (no auth) |
+| GET | `/api/exercises` | 200 list of supported exercises (**no login needed**): `slug`, `display_name`, `aliases`, `analysis_supported`, `primary_angles`. Build the exercise picker from this |
+| POST | `/api/workouts` | body `{"exercise":"<any spelling>"}` (optional; defaults to `"squat"`) → 201 `WorkoutOut`. Unknown exercise → 422 listing the supported ones |
+| GET | `/api/workouts?limit=20` | 200 list of your `WorkoutOut`, newest first (`limit` 1-100) |
+| GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
+| DELETE | `/api/workouts/{session_id}` | **Permanently** deletes the workout from both databases: its reps and coaching events (Supabase) and its sensor readings (Tiger Data). 204 on success; 404 if it is not yours or does not exist (so deleting twice is a 404); 503 if sensor data could not be deleted right now, in which case **nothing** was deleted and it is safe to retry. A socket that is still streaming that workout is closed with `4409`. There is no undo, so the app should confirm first |
+| GET | `/api/workouts/{session_id}/summary` | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far) |
+| GET | `/api/workouts/{session_id}/coach-summary` | 200 `{"summary": "<3-4 sentence recap>", "source": "agent"\|"rules"}`: a plain-language recap of the workout for the end-of-workout screen. `source: "rules"` is a deterministic recap (used when the AI coach is off, unavailable, or the user reported pain). Finished workouts are cached. At most ~6 per minute per user (429 beyond that) |
+| GET | `/api/workouts/{session_id}/analytics` | 200 compact analytics: `supabase` (rep stats, coaching events) + `timeseries` (SQL summaries from Tiger Data, per-rep depth/range trends). `timeseries.available` is `false` with a `reason` (`not_configured` / `unavailable`) when Tiger Data is off or down |
+| GET | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window |
+| POST | `/api/workouts/{session_id}/finish` | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry) |
 
 **Exercises.** Supported: `squat`, `push-up`, `pull-up`, `deadlift`, `bench-press`, `lunge`, `plank`. The
 `exercise` value is matched loosely and returned in its canonical form: `"Push Up"`, `"pushup"`, `"PUSH_UP"` and
@@ -29,8 +30,11 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 **Two levels of support, do not confuse them.** _Logging_ works for every exercise: the workout is created,
 streamed to (camera/ESP32 readings are recorded in Tiger Data if configured), finished, shown in history, and the
 user can pause or report pain. _Analysis_ (the server counting reps and the rule-based coach giving feedback) exists
-for **squat only**. For every other exercise `analysis_supported` is `false`: the server does **not** count reps
-or coach, `total_reps` stays 0, and the app should say tracking isn't available yet rather than show a rep counter.
+for **squat** (counted from the knee angles) and **push-up** (counted from the elbow angles; the thresholds are untuned
+guesses, tried on simulated data only). For every other exercise `analysis_supported` is `false`: the server does
+**not** count reps or coach, `total_reps` stays 0, and the app should say tracking isn't available yet rather than
+show a rep counter. The optional LLM wording of cues and recaps is squat-only for now; push-up cues and recaps use
+the deterministic rule text (`source: "rules"`).
 
 `WorkoutOut`: `session_id`, `exercise` (canonical), `analysis_supported`, `status` (`active`\|`completed`), `started_at`, `ended_at`
 (null while active), `total_reps`, `dropped_frames`, `aborted_attempts` (the last two are live
@@ -43,6 +47,9 @@ counters, 0 when the session isn't streaming).
   "workout": { "...": "a WorkoutOut" },
   "stats": {
     "rep_count": 5,
+    "avg_min_angle_deg": 87.6,
+    "deepest_angle_deg": 85.0,
+    "shallowest_angle_deg": 98.0,
     "avg_min_knee_angle_deg": 87.6,
     "deepest_knee_angle_deg": 85.0,
     "shallowest_knee_angle_deg": 98.0,
@@ -54,6 +61,8 @@ counters, 0 when the session isn't streaming).
     {
       "rep_number": 1,
       "metrics": {
+        "min_angle_deg": 85.0,
+        "joint": "knee",
         "min_knee_angle_deg": 85.0,
         "duration_ms": 1716,
         "...": "..."
@@ -223,6 +232,8 @@ Every signal is answered with a `session_state` message (below).
   "session_id": "UUID",
   "rep_count": 5,
   "metrics": {
+    "min_angle_deg": 85.0,
+    "joint": "knee",
     "min_knee_angle_deg": 85.0,
     "descent_ms": 363,
     "ascent_ms": 396,
@@ -232,8 +243,15 @@ Every signal is answered with a `session_state` message (below).
 }
 ```
 
-`max_asymmetry_deg` is `null` if both knees were never visible in the same frame.
+`min_angle_deg` is the deepest value of the joint the exercise counts, and `joint` says which: `"knee"` (squat) or
+`"elbow"` (push-up). `min_knee_angle_deg` is the original squat field: the same number as `min_angle_deg` for knee
+exercises and `null` for elbow exercises, so new code should read `min_angle_deg`. In the summary `stats`, the
+`*_angle_deg` fields cover whichever joint is counted and the `*_knee_*` fields are null for push-ups.
+
+`max_asymmetry_deg` is `null` if both sides (both knees, or both elbows) were never visible in the same frame.
 `duration_ms` runs from leaving standing (< 150°) to returning to standing (≥ 160°).
+
+**Personal standing angle.** Those 150°/160° are the defaults. If someone's knees read lower than 160° when they stand (camera angle, slightly bent knees) and hold still for about a third of a second, the server lowers the standing threshold to just under their resting angle (never below 145°, never above 160°) and keeps the same 10° gap, so their reps are counted instead of silently ignored. Depth (≤ 110°) is not adapted. Checked on synthetic noisy data only (all 360 noisy runs counted exactly; fidgeting produced no false reps); not checked on real camera data.
 
 `coaching_feedback` — sent right after the `rep_completed` that triggered it, and saved to
 `coaching_events`:
@@ -250,7 +268,10 @@ Every signal is answered with a `session_state` message (below).
 }
 ```
 
-Currently a rule-based coach (`source: "rules"`; `"agent"` is reserved for the future LLM coach).
+`source` is `"rules"` (the deterministic coach's message) or `"agent"` (an LLM worded it; only when the server has the
+AI coach enabled, see `docs/AI_COACH.md`). Show `message` the same way either way. With the AI coach on, a cue may
+arrive a few seconds **after** its `rep_completed` (the model takes a moment, and the app keeps counting meanwhile),
+or not at all if the model judged it unhelpful. Never assume a cue is immediate.
 Issue codes: `reduced_depth` (last 2 reps clearly shallower than the median of the first 3),
 `asymmetry` (left/right knee angles differ a lot in 2 reps in a row). Feedback is rate-limited: none
 until 3 reps exist, at least 2 reps between messages, 4 reps before repeating an issue, max 6 per
