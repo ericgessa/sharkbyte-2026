@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -21,9 +22,11 @@ from app.schemas.events import (
 )
 from app.schemas.sensors import SensorUpdate
 from app.services.coaching import ACTION_RECOMMEND_REST, PAIN_ISSUE_CODE, PAIN_MESSAGE
+from app.services.exercises import DEFAULT_EXERCISE, for_stored_name
 from app.services import persistence
 from app.services.ingest import pose_readings, sensor_readings
 from app.services.persistence import Write
+from app.services.ratelimit import TokenBucket
 from app.services.rep_counter import PoseSample, RepMetrics
 from app.services.session_manager import LiveSession
 
@@ -36,6 +39,15 @@ CLOSE_NOT_FOUND = 4404  # also used for "exists but is not yours"
 CLOSE_NOT_ACTIVE = 4409
 CLOSE_SERVER_ERROR = 4500
 AUTH_TIMEOUT_S = 10.0
+CLOSE_REPLACED = 4410  # a newer connection took this session over
+CLOSE_TOO_BIG = 1009  # standard "message too big"
+MAX_MESSAGE_BYTES = 16_384  # pose/sensor messages are ~300 B; the largest legit one is the auth token
+RATE_PER_S = 300.0  # sustained measurements/second per connection (camera ~30 + a fast IMU is well under this)
+BURST = 600  # lets a reconnecting phone flush ~2 s of buffered frames
+# user_signal (pause / resume / PAIN) has its own small limit so a flood of measurements can never starve it.
+SIGNAL_RATE_PER_S = 5.0
+SIGNAL_BURST = 20
+RATE_WARN_EVERY_S = 5.0
 
 
 async def _send(ws: WebSocket, event: BaseModel) -> None:
@@ -93,6 +105,9 @@ async def _authenticate(ws: WebSocket, session_id: UUID) -> LiveSession | None:
     """First message must be ``auth``. Returns the live session, or closes the socket."""
     try:
         raw = await asyncio.wait_for(ws.receive_text(), AUTH_TIMEOUT_S)
+        if len(raw) > MAX_MESSAGE_BYTES:
+            await ws.close(code=CLOSE_TOO_BIG)
+            return None
         token = AuthMessage.model_validate_json(raw).access_token
     except (asyncio.TimeoutError, ValidationError):
         await ws.close(code=CLOSE_UNAUTHENTICATED)
@@ -115,12 +130,27 @@ async def _authenticate(ws: WebSocket, session_id: UUID) -> LiveSession | None:
     live = ws.app.state.live.get(session_id)
     if live is None:
         saved = await asyncio.to_thread(store.count_repetitions, session_id)
-        live = ws.app.state.live.get_or_create(session_id, user_id, saved_reps=saved)
+        stored = (row.get("exercises") or {}).get("name", DEFAULT_EXERCISE)
+        live = ws.app.state.live.get_or_create(session_id, user_id, saved_reps=saved, exercise=for_stored_name(stored))
         # A pain report must survive a server restart: if one was saved, stay in "no coaching" mode.
         events = await asyncio.to_thread(store.list_coaching_events, session_id)
         if any(e.get("issue_code") == PAIN_ISSUE_CODE for e in events):
             live.pain_reported, live.coach.enabled = True, False
     return live
+
+
+async def _take_over(ws: WebSocket, live: LiveSession) -> None:
+    """One socket per session. A reconnecting phone must not have to wait for the old, possibly
+    half-open connection to time out: the newest authenticated connection wins and the old one is closed."""
+    old = live.socket
+    live.socket = ws
+    live.touch()
+    if old is not None and old is not ws:
+        logger.info("session %s taken over by a new connection", live.session_id)
+        try:
+            await old.close(code=CLOSE_REPLACED)
+        except Exception:  # already closed or broken: nothing to do
+            pass
 
 
 async def _handle_signal(ws: WebSocket, live: LiveSession, signal: str) -> None:
@@ -159,17 +189,24 @@ async def _handle_signal(ws: WebSocket, live: LiveSession, signal: str) -> None:
 @router.websocket("/ws/workouts/{session_id}")
 async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
     await ws.accept()
+    live: LiveSession | None = None
     try:
         live = await _authenticate(ws, session_id)
         if live is None:
             return
+        await _take_over(ws, live)
         counter = live.counter
+        bucket = TokenBucket(RATE_PER_S, BURST)
+        signal_bucket = TokenBucket(SIGNAL_RATE_PER_S, SIGNAL_BURST)
+        last_rate_warning = float("-inf")
         logger.info("ws authenticated session=%s", session_id)
         await _send(
             ws,
             SessionReady(
                 session_id=session_id,
                 rep_count=counter.rep_count,
+                exercise=live.exercise.slug,
+                analysis_supported=live.exercise.analysis_supported,
                 paused=live.paused,
                 coaching_enabled=not live.pain_reported,
             ),
@@ -177,6 +214,21 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
 
         while True:
             raw = await ws.receive_text()
+            if live.socket is not ws:  # a newer connection took over; this one is stale
+                return
+            live.touch()
+            if len(raw) > MAX_MESSAGE_BYTES:
+                await ws.close(code=CLOSE_TOO_BIG)
+                return
+            # A cheap pre-parse check routes anything claiming to be a user_signal to its own bucket; it is
+            # still fully validated afterwards, so spoofing the text only gets you the (small) signal limit.
+            limiter = signal_bucket if '"user_signal"' in raw else bucket
+            if not limiter.allow():  # a flood: drop it, and say so (at most once per few seconds)
+                now = time.monotonic()
+                if now - last_rate_warning >= RATE_WARN_EVERY_S:
+                    last_rate_warning = now
+                    await _send(ws, ErrorEvent(code="rate_limited", detail="too many messages; slow down"))
+                continue
             if live.finished:
                 await ws.close(code=CLOSE_NOT_ACTIVE)
                 return
@@ -261,3 +313,7 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                     )
     except WebSocketDisconnect:
         logger.info("ws disconnected session=%s", session_id)
+    finally:
+        if live is not None and live.socket is ws:  # not already replaced by a newer connection
+            live.socket = None
+            live.touch()

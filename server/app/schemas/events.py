@@ -6,9 +6,11 @@ from datetime import datetime
 from typing import Annotated, Any, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from app.schemas.sensors import SensorUpdate
+from app.services.exercises import DEFAULT_EXERCISE, UnknownExerciseError
+from app.services.exercises import resolve as resolve_exercise
 
 SCHEMA_VERSION = 1
 
@@ -17,18 +19,39 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# PoseData field -> stored metric name (see schemas/sensors.py for the table's naming rules)
+ANGLE_FIELDS: dict[str, str] = {
+    "left_knee_angle_deg": "left_knee_angle",
+    "right_knee_angle_deg": "right_knee_angle",
+    "left_elbow_angle_deg": "left_elbow_angle",
+    "right_elbow_angle_deg": "right_elbow_angle",
+    "left_hip_angle_deg": "left_hip_angle",
+    "right_hip_angle_deg": "right_hip_angle",
+}
+
+
 # ------------------------------------------------------------------ incoming
 
 
 class PoseData(_Strict):
+    """Joint angles from the camera, degrees 0-180 (180 = straight). Send only joints that are visible.
+
+    Knee angles drive squat rep counting. Elbow and hip angles are recorded (Tiger Data) for the other
+    exercises but NOT analyzed yet: only squats are counted and coached.
+    """
+
     left_knee_angle_deg: float | None = Field(default=None, ge=0, le=180)
     right_knee_angle_deg: float | None = Field(default=None, ge=0, le=180)
+    left_elbow_angle_deg: float | None = Field(default=None, ge=0, le=180)
+    right_elbow_angle_deg: float | None = Field(default=None, ge=0, le=180)
+    left_hip_angle_deg: float | None = Field(default=None, ge=0, le=180)
+    right_hip_angle_deg: float | None = Field(default=None, ge=0, le=180)
     landmark_confidence: float = Field(ge=0, le=1)
 
     @model_validator(mode="after")
-    def _at_least_one_knee(self) -> "PoseData":
-        if self.left_knee_angle_deg is None and self.right_knee_angle_deg is None:
-            raise ValueError("at least one knee angle is required")
+    def _at_least_one_angle(self) -> "PoseData":
+        if all(getattr(self, f) is None for f in ANGLE_FIELDS):
+            raise ValueError("at least one joint angle is required")
         return self
 
 
@@ -70,6 +93,9 @@ class SessionReady(_Strict):
     type: Literal["session_ready"] = "session_ready"
     session_id: UUID
     rep_count: int
+    exercise: str = "squat"
+    # False: this exercise is logged and its data recorded, but reps are NOT counted and there is no coaching.
+    analysis_supported: bool = True
     paused: bool = False
     coaching_enabled: bool = True  # False once the user has reported pain in this session
 
@@ -120,7 +146,7 @@ class TrackingStatus(_Strict):
 class ErrorEvent(_Strict):
     schema_version: Literal[1] = SCHEMA_VERSION
     type: Literal["error"] = "error"
-    code: Literal["invalid_message", "session_mismatch"]
+    code: Literal["invalid_message", "session_mismatch", "rate_limited"]
     detail: str
 
 
@@ -128,7 +154,18 @@ class ErrorEvent(_Strict):
 
 
 class CreateWorkoutRequest(_Strict):
-    exercise: Literal["squat"] = "squat"
+    """``exercise`` accepts any spelling of a registered exercise ("Push Up", "pushup", "push-up") and is
+    normalized to its canonical name. Unknown names get a 422 listing what is supported."""
+
+    exercise: str = DEFAULT_EXERCISE
+
+    @field_validator("exercise", mode="before")
+    @classmethod
+    def _normalize_exercise(cls, v: object) -> str:
+        try:
+            return resolve_exercise(v).slug
+        except UnknownExerciseError as exc:
+            raise ValueError(str(exc)) from None
 
 
 class RepOut(_Strict):
@@ -161,6 +198,8 @@ class StatsOut(_Strict):
 class WorkoutOut(_Strict):
     session_id: UUID
     exercise: str
+    # False: logged only. The server does not count reps or coach this exercise yet.
+    analysis_supported: bool = False
     status: Literal["active", "completed"]
     started_at: datetime
     ended_at: datetime | None = None

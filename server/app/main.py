@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -13,7 +15,7 @@ from app.api import routes, websocket
 from app.services.auth import SupabaseAuth
 from app.services.database import DatabaseConfigError, SupabaseStore
 from app.services.ingest import SensorIngestor
-from app.services.session_manager import LiveSessions
+from app.services.session_manager import DEFAULT_IDLE_TTL_S, DEFAULT_SWEEP_INTERVAL_S, LiveSessions, sweep_loop
 from app.services.timeseries import TigerStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -30,7 +32,14 @@ def _cors_origins() -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()] or ["*"]
 
 
-def create_app(store: Any = None, auth: Any = None, timeseries: Any = None, ingest: Any = None) -> FastAPI:
+def create_app(
+    store: Any = None,
+    auth: Any = None,
+    timeseries: Any = None,
+    ingest: Any = None,
+    idle_ttl_s: float = DEFAULT_IDLE_TTL_S,
+    sweep_interval_s: float = DEFAULT_SWEEP_INTERVAL_S,
+) -> FastAPI:
     """``store`` / ``auth`` / ``timeseries`` / ``ingest`` can be replaced (tests use fakes).
 
     Tiger Data is optional: with no TIGERDATA_URL the ingestor is a no-op and everything else works.
@@ -39,11 +48,18 @@ def create_app(store: Any = None, auth: Any = None, timeseries: Any = None, inge
     ingestor = ingest if ingest is not None else SensorIngestor(tiger if tiger.configured else None)
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await ingestor.start()  # background batch writer for sensor readings
+        # Housekeeping: evict live sessions whose app went away and never came back.
+        sweeper = asyncio.create_task(
+            sweep_loop(application.state.live, application.state.store, idle_ttl_s, sweep_interval_s), name="live-session-sweeper"
+        )
         try:
             yield
         finally:
+            sweeper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sweeper
             await ingestor.stop()  # last best-effort flush
             close = getattr(tiger, "close", None)
             if close:

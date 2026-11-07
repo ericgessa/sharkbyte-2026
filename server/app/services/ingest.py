@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 from uuid import UUID
 
-from app.schemas.events import PoseData
+from app.schemas.events import ANGLE_FIELDS, PoseData
 from app.schemas.sensors import SENSOR_FIELDS, SensorData, SensorReading
 
 logger = logging.getLogger(__name__)
@@ -59,10 +59,12 @@ class ClockAnchors:
 
 
 def pose_readings(session_id: UUID, when: datetime, data: PoseData) -> list[SensorReading]:
-    """Camera angles. Landmark confidence rides in metadata so analytics can filter unreliable frames."""
+    """Camera joint angles (knee, elbow, hip). Landmark confidence rides in metadata so analytics can
+    filter unreliable frames."""
     meta = {"confidence": data.landmark_confidence}
     out: list[SensorReading] = []
-    for metric, value in (("left_knee_angle", data.left_knee_angle_deg), ("right_knee_angle", data.right_knee_angle_deg)):
+    for field_name, metric in ANGLE_FIELDS.items():
+        value = getattr(data, field_name)
         if value is not None:
             out.append(
                 SensorReading(time=when, session_id=session_id, source="camera", metric_name=metric, metric_value=value, metadata=meta)

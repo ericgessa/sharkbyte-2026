@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 
 from app.schemas.events import CreateWorkoutRequest, StatsOut, WorkoutOut, WorkoutSummaryOut
 from app.services import persistence
+from app.services.exercises import DEFAULT_EXERCISE, all_exercises, for_stored_name
 from app.services.analytics import readings_in_window
 from app.services.coach_context import build_coach_context
 from app.services.summary import compute_stats
@@ -49,10 +50,11 @@ UserId = Annotated[str, Depends(current_user_id)]
 
 
 def to_out(row: dict[str, Any], live: LiveSession | None = None) -> WorkoutOut:
-    exercise = (row.get("exercises") or {}).get("name", "squat")
+    exercise = (row.get("exercises") or {}).get("name", DEFAULT_EXERCISE)
     return WorkoutOut(
         session_id=row["id"],
         exercise=exercise,
+        analysis_supported=for_stored_name(exercise).analysis_supported,
         status=row["status"],
         started_at=row["started_at"],
         ended_at=row.get("ended_at"),
@@ -78,6 +80,23 @@ def root() -> dict[str, str]:
         "docs": "/docs (interactive REST docs)",
         "auth": "all /api/* calls need 'Authorization: Bearer <Supabase access_token>'; see docs/frontend-integration.md",
     }
+
+
+@router.get("/api/exercises")
+def list_exercises() -> list[dict[str, Any]]:
+    """The exercises the app can offer. No login needed (nothing user-specific). Use ``slug`` when creating a
+    workout; any spelling of the name also works. ``analysis_supported: false`` means the workout is logged
+    and its sensor data recorded, but the server does not count reps or coach that exercise yet."""
+    return [
+        {
+            "slug": e.slug,
+            "display_name": e.display_name,
+            "aliases": list(e.aliases),
+            "analysis_supported": e.analysis_supported,
+            "primary_angles": list(e.primary_angles),
+        }
+        for e in all_exercises()
+    ]
 
 
 @router.get("/health")

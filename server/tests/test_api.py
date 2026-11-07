@@ -105,8 +105,8 @@ def test_other_users_session_looks_like_it_does_not_exist(client):
     assert client.get(f"/api/workouts/{uuid4()}", headers=ALICE).status_code == 404
 
 
-def test_bad_exercise_is_422(client):
-    assert client.post("/api/workouts", json={"exercise": "deadlift"}, headers=ALICE).status_code == 422
+def test_unknown_exercise_is_422(client):
+    assert client.post("/api/workouts", json={"exercise": "burpee"}, headers=ALICE).status_code == 422
 
 
 # ------------------------------------------------------------------ the headline flow

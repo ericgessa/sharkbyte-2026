@@ -24,6 +24,8 @@ from uuid import UUID
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+from app.services.exercises import find as find_exercise
+
 load_dotenv()  # reads server/.env when present; real environment variables win
 
 
@@ -90,12 +92,34 @@ def get_exercise_id(name: str, client: Client | None = None) -> int:
     return int(rows[0]["id"])
 
 
-def create_workout_session(
-    user_id: UUID | str, exercise_name: str = "squat", client: Client | None = None
-) -> dict[str, Any]:
-    """Insert an 'active' session for ``user_id`` and return the new row."""
+def ensure_exercise(name: str, config: dict[str, Any], client: Client | None = None) -> int:
+    """The id of exercise ``name``, creating its row (with ``config``) the first time it is used.
+
+    This is why adding an exercise to the code registry needs no database migration. An existing row
+    (e.g. the seeded squat row) is never modified, and two requests racing to create it are safe.
+    """
     db = client or get_client()
-    exercise_id = get_exercise_id(exercise_name, db)
+    rows = _rows(db.table("exercises").select("id").eq("name", name).limit(1).execute())
+    if rows:
+        return int(rows[0]["id"])
+    db.table("exercises").upsert({"name": name, "config": config}, on_conflict="name", ignore_duplicates=True).execute()
+    return get_exercise_id(name, db)
+
+
+def create_workout_session(
+    user_id: UUID | str,
+    exercise_name: str = "squat",
+    client: Client | None = None,
+    exercise_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Insert an 'active' session for ``user_id`` and return the new row.
+
+    With ``exercise_config`` the exercise row is created if missing; without it the exercise must exist.
+    """
+    db = client or get_client()
+    exercise_id = (
+        ensure_exercise(exercise_name, exercise_config, db) if exercise_config is not None else get_exercise_id(exercise_name, db)
+    )
     rows = _rows(
         db.table("workout_sessions")
         .insert({"user_id": str(user_id), "exercise_id": exercise_id})
@@ -255,7 +279,10 @@ class SupabaseStore:
         return self._client or get_client()
 
     def create_session(self, user_id: str, exercise: str) -> dict[str, Any]:
-        row = create_workout_session(user_id, exercise, self.client)
+        known = find_exercise(exercise)  # the registry knows how to describe a brand-new exercise row
+        row = create_workout_session(
+            user_id, exercise, self.client, exercise_config=known.db_config() if known else None
+        )
         row["exercises"] = {"name": exercise}
         return row
 

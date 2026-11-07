@@ -20,3 +20,12 @@ except app.services.timeseries.TigerDataConfigError:
 def _hide_real_tigerdata(monkeypatch):
     monkeypatch.delenv("TIGERDATA_URL", raising=False)
     monkeypatch.delenv("TIGERDATA_PASSWORD", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _generous_ws_rate_limit(monkeypatch):
+    """Tests blast hundreds of frames with no pacing; rate-limit tests set their own small values."""
+    from app.api import websocket
+
+    monkeypatch.setattr(websocket, "BURST", 10**9)
+    monkeypatch.setattr(websocket, "RATE_PER_S", 10.0**9)
