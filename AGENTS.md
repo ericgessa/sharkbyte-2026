@@ -49,7 +49,8 @@ server/
   app/services/exercises.py         exercise registry (one place to add an exercise; see docs/adding-an-exercise.md)
   app/services/rep_counter.py
   app/simulation.py                 simulated pose data for tests/demo
-  app/services/coaching.py          rule-based coach (LLM coach would sit on top, using it as fallback)
+  app/services/coaching.py          rule-based coach (always the fallback)
+  app/services/agent.py             optional LLM layer on top of the rules: guardrails, fallbacks, Anthropic provider (docs/AI_COACH.md)
   app/services/auth.py              Supabase token verification
   app/services/persistence.py       retryable database writes
   app/services/ingest.py            sensor buffer + batch writer to Tiger Data, clock anchoring
