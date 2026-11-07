@@ -13,6 +13,7 @@ from app.schemas.events import (
     CoachingFeedback,
     ErrorEvent,
     RepCompleted,
+    RepRejected,
     RepMetricsOut,
     SessionReady,
     SessionState,
@@ -21,15 +22,15 @@ from app.schemas.events import (
     incoming_adapter,
 )
 from app.schemas.sensors import SensorUpdate
-from app.services.agent import CoachAgent, build_cue_context, build_posture_context
 from app.services.coaching import ACTION_RECOMMEND_REST, PAIN_ISSUE_CODE, PAIN_MESSAGE, CoachingDecision
 from app.services.exercises import DEFAULT_EXERCISE, for_stored_name
 from app.services import persistence
 from app.services.ingest import pose_readings, sensor_readings
 from app.services.persistence import Write
 from app.services.posture import PostureCoach
+from app.services.spine_form import SpineFormCoach
 from app.services.ratelimit import TokenBucket
-from app.services.rep_counter import PoseSample, RepMetrics
+from app.services.rep_counter import PoseSample, RejectedRep, RejectReason, RepMetrics
 from app.services.session_manager import LiveSession
 
 logger = logging.getLogger(__name__)
@@ -77,14 +78,71 @@ def _metrics_dict(r: RepMetrics) -> dict:
     }
 
 
-def _stored_metrics(live: LiveSession, r: RepMetrics) -> dict:
+def _stored_metrics(live: LiveSession, r: RepMetrics, spine: dict | None = None) -> dict:
     """What is saved in Supabase for a rep: the metrics plus when the rep happened (server time),
-    so time-series analytics can slice a session into reps. Not sent to the client."""
-    return {
+    so time-series analytics can slice a session into reps, and the wearable's back-shape record for the rep
+    (``spine``, when the wearable sent data). Not sent to the client."""
+    out = {
         **_metrics_dict(r),
         "started_at": live.clock.to_datetime("camera", r.start_ts_ms).isoformat(),
         "ended_at": live.clock.to_datetime("camera", r.end_ts_ms).isoformat(),
     }
+    if spine is not None:
+        out["spine"] = spine
+    return out
+
+
+# Form IQ: what the user is told when an attempt is not counted (rep_counter.RejectReason).
+REJECT_MESSAGES = {
+    RejectReason.PARTIAL_RANGE: "That one didn't count: go a little lower so you reach the bottom.",
+    RejectReason.TOO_FAST: "That one didn't count: it was too quick to track. Slow down a little.",
+}
+ACTION_REP_REJECTED = "rep_rejected"
+
+
+def _camera_ms(live: LiveSession, ts_ms: int) -> float:
+    return live.clock.to_datetime("camera", ts_ms).timestamp() * 1000
+
+
+def _record_spine(live: LiveSession, event: SensorUpdate) -> None:
+    """Buffer the wearable's section angles (server time) so each counted rep can be judged. Exercises without spine
+    rules are skipped. The fields only exist once the wearable's schema (Hardware_branch) is merged: until then this
+    reads nothing and does nothing."""
+    d = event.data
+    upper, mid, lumbar = (getattr(d, f, None) for f in ("spine_upper_deg", "spine_mid_deg", "spine_lumbar_deg"))
+    if upper is None and mid is None and lumbar is None:
+        return
+    if live.spine is None:
+        if live.exercise is None:
+            return
+        live.spine = SpineFormCoach(live.exercise.slug)
+        live.spine.enabled = not live.pain_reported
+    if live.spine.supported:
+        server_ms = live.clock.to_datetime(f"device:{event.device_id}", event.timestamp_ms).timestamp() * 1000
+        live.spine.add(server_ms, upper, mid, lumbar)
+
+
+async def _report_rejected(ws: WebSocket, live: LiveSession, rejected: RejectedRep) -> None:
+    """Tell the app an attempt didn't count and why, and save it so the end-of-workout report can mention it."""
+    message = REJECT_MESSAGES[rejected.reason]
+    reps = live.counter.rep_count
+    await _send(
+        ws,
+        RepRejected(
+            session_id=live.session_id,
+            rep_count=reps,
+            reason=rejected.reason.value,
+            message=message,
+            min_angle_deg=rejected.min_angle_deg,
+            joint=rejected.joint,
+            duration_ms=rejected.duration_ms,
+        ),
+    )
+    _persist(
+        ws,
+        live,
+        (persistence.COACHING_EVENT, (live.session_id, uuid4(), reps or None, rejected.reason.value, message, ACTION_REP_REJECTED)),
+    )
 
 
 def _record(ws: WebSocket, readings_fn) -> None:
@@ -175,37 +233,11 @@ async def _deliver_coaching(ws: WebSocket, live: LiveSession, decision: Coaching
     )
 
 
-def _spawn_agent_delivery(
-    ws: WebSocket, live: LiveSession, decision: CoachingDecision, agent: CoachAgent, context: dict
-) -> None:
-    """Let the LLM word (or suppress) a cue the rules already decided on, without blocking the live loop.
-
-    ``context`` is what the model sees (``build_cue_context`` for camera cues, ``build_posture_context`` for posture
-    cues), built by the caller from server-computed numbers. Whatever goes wrong inside, the user still gets the rule
-    message (``agent.refine`` falls back). Because the model takes a moment, the situation is re-checked before
-    sending: never coach after a pain report or a finish.
-    """
-
-    async def run() -> None:
-        try:
-            final = await agent.refine(decision, context)
-            target = live.socket  # the app may have reconnected while we waited: deliver to the current connection
-            if final is None or target is None or live.pain_reported or live.finished:
-                return
-            await _deliver_coaching(target, live, final)
-        except Exception:
-            logger.exception("coaching delivery failed; the rep count is unaffected")
-
-    task = asyncio.create_task(run())
-    live.agent_tasks.add(task)
-    task.add_done_callback(live.agent_tasks.discard)
-
-
 async def _coach_posture(ws: WebSocket, live: LiveSession, event: SensorUpdate) -> None:
     """Feed one ESP32 sample to that device's posture coach; deliver a cue if the posture rules decided on one.
 
-    Same path as camera cues: the rules decide, the LLM (if enabled) only words it in the background, and the rule
-    message is the fallback. A bug here is logged and never touches rep counting or sensor storage.
+    Deterministic, like camera cues: the rule message is sent as-is (Gemini only writes the end-of-workout recap).
+    A bug here is logged and never touches rep counting or sensor storage.
     """
     exercise = live.exercise
     if exercise is None or exercise.slug not in POSTURE_EXERCISES or event.data.imu_pitch_deg is None:
@@ -227,7 +259,6 @@ async def _coach_posture(ws: WebSocket, live: LiveSession, event: SensorUpdate) 
     if live.last_cue_at is not None and now - live.last_cue_at < MIN_CUE_GAP_S:
         logger.info("posture cue %s skipped: another cue went out %.1f s ago", found.issue_code, now - live.last_cue_at)
         return
-    live.last_cue_at = now  # reserve the slot now: the LLM may take a few seconds to word it
     # rep_count is the camera's count the app is showing; with the camera off (sensor only) it is the IMU's rep.
     decision = CoachingDecision(
         rep_number=live.counter.rep_count or found.rep_number,
@@ -236,11 +267,7 @@ async def _coach_posture(ws: WebSocket, live: LiveSession, event: SensorUpdate) 
         event_id=found.event_id,
     )
     logger.info("posture cue %s session=%s device=%s", found.issue_code, live.session_id, event.device_id)
-    agent = ws.app.state.agent
-    if agent.enabled:
-        _spawn_agent_delivery(ws, live, decision, agent, build_posture_context(exercise.slug, found, coach))
-    else:
-        await _deliver_coaching(ws, live, decision)
+    await _deliver_coaching(ws, live, decision)
 
 
 async def _take_over(ws: WebSocket, live: LiveSession) -> None:
@@ -271,6 +298,8 @@ async def _handle_signal(ws: WebSocket, live: LiveSession, signal: str) -> None:
         live.coach.enabled = False  # no more technique coaching this session
         for posture in live.posture.values():
             posture.enabled = False
+        if live.spine is not None:
+            live.spine.enabled = False
         reps = live.counter.rep_count
         await _send(
             ws,
@@ -371,6 +400,7 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                         event.data,
                     ),
                 )
+                _record_spine(live, event)
                 await _coach_posture(ws, live, event)
                 continue
 
@@ -396,6 +426,8 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                         tracking="lost" if result.tracking_changed else "recovered",
                     ),
                 )
+            if result.rejected is not None:
+                await _report_rejected(ws, live, result.rejected)
             if result.rep is not None:
                 r = result.rep
                 # Tell the client first (low latency), then save.
@@ -403,19 +435,21 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                     ws,
                     RepCompleted(session_id=session_id, rep_count=r.rep_number, metrics=RepMetricsOut(**_metrics_dict(r))),
                 )
-                _persist(ws, live, (persistence.REP, (session_id, r.rep_number, _stored_metrics(live, r))))
+                spine_form, spine_cue = None, None
+                if live.spine is not None and live.spine.supported:
+                    spine_form, spine_cue = live.spine.judge_rep(
+                        r.rep_number, _camera_ms(live, r.start_ts_ms), _camera_ms(live, r.end_ts_ms)
+                    )
+                spine = spine_form.as_metrics() if spine_form is not None else None
+                _persist(ws, live, (persistence.REP, (session_id, r.rep_number, _stored_metrics(live, r, spine))))
 
                 decision = live.coach.observe(r)
-                if decision is not None:
-                    live.last_cue_at = time.monotonic()  # holds back posture cues while this one is being worded
-                    agent = ws.app.state.agent
-                    if agent.enabled and live.exercise is not None and live.exercise.llm_supported:
-                        context = build_cue_context(
-                            live.exercise.slug, live.coach.reps, decision, live.coach.history, live.coach.config
-                        )
-                        _spawn_agent_delivery(ws, live, decision, agent, context)  # background: counting never waits
-                    else:
-                        await _deliver_coaching(ws, live, decision)
+                if decision is not None:  # the rule message, as-is: live cues never wait on an LLM
+                    await _deliver_coaching(ws, live, decision)
+                elif spine_cue is not None and (
+                    live.last_cue_at is None or time.monotonic() - live.last_cue_at >= MIN_CUE_GAP_S
+                ):
+                    await _deliver_coaching(ws, live, spine_cue)  # one cue per rep at most; the camera's comes first
     except WebSocketDisconnect:
         logger.info("ws disconnected session=%s", session_id)
     finally:

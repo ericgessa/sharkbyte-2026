@@ -1,5 +1,6 @@
-"""Posture cues from the upper-back IMU, end to end through the shared coach path (agent.py + websocket.py).
+"""Posture cues from the upper-back IMU over the live socket, and how they feed the end-of-workout report.
 
+Live cues are deterministic (rule messages only); Gemini is only the reporter after the workout (agent.py).
 All sensor data here is SIMULATED (app/sensor_simulation.py). Nothing calls a real LLM: FakeProvider scripts it.
 """
 
@@ -11,17 +12,12 @@ import pytest
 
 from app.api import websocket as wsmod
 from app.sensor_simulation import generate
-from app.services.agent import AgentOutput, CoachAgent, _check_text, build_posture_context
-from app.services.posture import MESSAGES, analyze
+from app.services.agent import FOCUS, ISSUE_LABELS, ISSUE_MEANINGS, CoachAgent, issues_seen, report_context, rules_summary
+from app.services.posture import ISSUE_CODES, MESSAGES
 from tests.fakes import InMemoryStore
-from tests.test_agent import CANDIDATE, CTX, FakeProvider, make_client, new_session, open_ws, run, wait_for
+from tests.test_agent import FakeProvider, make_client, new_session, open_ws, run, wait_for
 
 RATE_HZ = 20  # a whole simulated set (~230 messages) stays inside the socket's burst limit of 600
-
-
-def _posture_decision(scenario):
-    coach = analyze(generate(scenario).messages)
-    return coach.decisions[0], coach
 
 
 def _send_sensor_set(ws, sid, scenario, reps=3):
@@ -39,176 +35,85 @@ def _next_of_type(ws, wanted):
         seen.append(msg["type"])
 
 
-def _barrier(ws):
+def _barrier(ws, sid):
     """Ask for a session_state reply: everything the server sent earlier has arrived before it."""
-    ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": ws.sid, "signal": "resume"}))
+    ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": sid, "signal": "resume"}))
     return _next_of_type(ws, "session_state")[1]
-
-
-def _open(c, sid):
-    cm, ws, ready = open_ws(c, sid)
-    ws.sid = sid
-    return cm, ws, ready
-
-
-# ---- the context the model sees, and the checks on its reply -----------------------------------
-
-
-def test_posture_context_is_small_server_computed_and_carries_the_wording_rules():
-    decision, coach = _posture_decision("lateral_shift")
-    ctx = build_posture_context("squat", decision, coach)
-    assert ctx["source"] == "upper_back_imu"
-    assert ctx["detected_issue"]["code"] == "lateral_shift" and "one side" in ctx["detected_issue"]["meaning"]
-    assert ctx["rule_message"] == MESSAGES["lateral_shift"].format(side="right")
-    assert ctx["evidence"] == decision.evidence  # the numbers behind the rule decision, not the raw stream
-    assert ctx["numbers_allowed"] is False and ctx["side"] == "right"
-    assert len(json.dumps(ctx)) < 2000
-
-
-def test_the_cue_being_worded_is_not_listed_as_already_given():
-    """Otherwise the model reads its own cue as a repeat and chooses no_action (seen on a live Gemini run)."""
-    coach = analyze(generate("forward_lean", reps=20).messages)
-    first, second = coach.decisions[:2]
-    assert build_posture_context("squat", first, coach)["feedback_already_given"] == [
-        {"rep": d.rep_number, "issue": d.issue_code} for d in coach.decisions[1:]
-    ]
-    listed = build_posture_context("squat", second, coach)["feedback_already_given"]
-    assert {"rep": first.rep_number, "issue": first.issue_code} in listed
-    assert {"rep": second.rep_number, "issue": second.issue_code} not in listed
-
-
-def test_every_posture_issue_has_a_meaning_for_the_model():
-    for scenario in ("forward_lean", "lean_creep", "lateral_shift", "slouched_standing"):
-        decision, coach = _posture_decision(scenario)
-        ctx = build_posture_context("squat", decision, coach)
-        assert ctx["detected_issue"]["meaning"] != decision.issue_code
-
-
-@pytest.mark.parametrize(
-    "text, reason",
-    [
-        ("Your shoulders dipped about 7 degrees to the right.", "number_not_allowed"),
-        ("Your shoulders dip to the left at the bottom.", "wrong_side"),
-        ("Keep your shoulders level.", "wrong_side"),  # must name the measured side
-        ("Don't lean left or right.", "wrong_side"),
-        ("Keep your spine neutral and your shoulders level on the right.", "medical_language"),
-    ],
-)
-def test_posture_wording_rules_are_enforced(text, reason):
-    decision, coach = _posture_decision("lateral_shift")
-    assert _check_text(text, build_posture_context("squat", decision, coach), 200) == reason
-
-
-def test_good_posture_wording_passes():
-    decision, coach = _posture_decision("lateral_shift")
-    ctx = build_posture_context("squat", decision, coach)
-    assert _check_text("Your shoulders dip to the right as you sit down. Press evenly through both feet.", ctx, 200) is None
-
-
-def test_camera_cues_still_allow_numbers_from_the_data():
-    """The posture-only rules are opt-in through the context: camera cue checks are unchanged."""
-    assert "numbers_allowed" not in CTX and "side" not in CTX
-    assert _check_text("Your knees reached 85 degrees in your first reps.", CTX, 200) is None
-
-
-def test_an_llm_reply_with_numbers_falls_back_to_the_rule_message():
-    decision, coach = _posture_decision("forward_lean")
-    ctx = build_posture_context("squat", decision, coach)
-    agent = CoachAgent(FakeProvider(decide=AgentOutput(action="send_feedback", message="You leaned 62 degrees forward.")))
-    candidate = CANDIDATE.__class__(decision.rep_number, decision.issue_code, decision.message)
-    assert run(agent.refine(candidate, ctx)) is candidate
-    assert agent.fallback_reasons == {"number_not_allowed": 1}
 
 
 # ---- live: sensor_update over the workout WebSocket ----------------------------------------------
 
 
-def test_a_posture_cue_reaches_the_app_worded_by_the_llm_and_is_saved():
+@pytest.mark.parametrize("llm_on", [False, True])
+def test_a_posture_cue_is_the_rule_message_and_never_calls_the_llm(llm_on):
     store = InMemoryStore()
-    prov = FakeProvider(decide=AgentOutput(action="send_feedback", message="Your shoulders dip to the right; press evenly through both feet."))
-    with make_client(store, CoachAgent(prov)) as c:
+    prov = FakeProvider()
+    with make_client(store, CoachAgent(prov if llm_on else None)) as c:
         sid = new_session(c)
-        cm, ws, _ = _open(c, sid)
+        cm, ws, _ = open_ws(c, sid)
         try:
-            _send_sensor_set(ws, sid, "lateral_shift")
+            _send_sensor_set(ws, sid, "slouched_standing")
             fb, _ = _next_of_type(ws, "coaching_feedback")
         finally:
             cm.__exit__(None, None, None)
-    assert fb["issue_code"] == "lateral_shift" and fb["source"] == "agent"
-    assert fb["message"] == "Your shoulders dip to the right; press evenly through both feet."
+    assert fb["issue_code"] == "rounded_standing_posture" and fb["source"] == "rules"
+    assert fb["message"] == MESSAGES["rounded_standing_posture"]
     assert fb["rep_count"] == 2  # no camera frames: the IMU's own rep number
     assert wait_for(lambda: len(store.events.get(sid, {})) == 1)
     (saved,) = store.events[sid].values()
-    assert saved["issue_code"] == "lateral_shift" and saved["message"] == fb["message"]
-    (ctx,) = prov.decide_calls
-    assert ctx["source"] == "upper_back_imu" and ctx["side"] == "right" and ctx["numbers_allowed"] is False
+    assert saved["issue_code"] == "rounded_standing_posture" and saved["message"] == fb["message"]
+    assert prov.decide_calls == []  # Gemini is the reporter only: never consulted during the workout
 
 
-def test_without_the_llm_the_posture_rule_message_is_sent():
-    store = InMemoryStore()
-    with make_client(store, CoachAgent(None)) as c:
+def test_forward_lean_cue_reaches_the_app():
+    with make_client(InMemoryStore(), CoachAgent(None)) as c:
         sid = new_session(c)
-        cm, ws, _ = _open(c, sid)
+        cm, ws, _ = open_ws(c, sid)
         try:
             _send_sensor_set(ws, sid, "forward_lean")
             fb, _ = _next_of_type(ws, "coaching_feedback")
         finally:
             cm.__exit__(None, None, None)
-    assert fb["issue_code"] == "excessive_forward_lean" and fb["source"] == "rules"
-    assert fb["message"] == MESSAGES["excessive_forward_lean"]
+    assert fb["issue_code"] == "excessive_forward_lean" and fb["message"] == MESSAGES["excessive_forward_lean"]
 
 
 @pytest.mark.parametrize("scenario", ["good_form", "sensor_dropout"])
 def test_good_form_gets_no_posture_cue(scenario):
-    prov = FakeProvider()
-    with make_client(InMemoryStore(), CoachAgent(prov)) as c:
+    with make_client(InMemoryStore(), CoachAgent(None)) as c:
         sid = new_session(c)
-        cm, ws, _ = _open(c, sid)
+        cm, ws, _ = open_ws(c, sid)
         try:
             _send_sensor_set(ws, sid, scenario, reps=5)
-            time.sleep(0.2)
-            assert "coaching_feedback" not in _barrier(ws)
+            assert "coaching_feedback" not in _barrier(ws, sid)
         finally:
             cm.__exit__(None, None, None)
-    assert prov.decide_calls == []
 
 
 def test_after_a_pain_report_posture_cues_stop():
-    prov = FakeProvider()
-    with make_client(InMemoryStore(), CoachAgent(prov)) as c:
+    with make_client(InMemoryStore(), CoachAgent(None)) as c:
         sid = new_session(c)
-        cm, ws, _ = _open(c, sid)
+        cm, ws, _ = open_ws(c, sid)
         try:
             ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": sid, "signal": "pain"}))
             _next_of_type(ws, "session_state")
             _send_sensor_set(ws, sid, "forward_lean")
-            time.sleep(0.2)
-            assert "coaching_feedback" not in _barrier(ws)
+            assert "coaching_feedback" not in _barrier(ws, sid)
         finally:
             cm.__exit__(None, None, None)
-    assert prov.decide_calls == []
 
 
 def test_posture_cues_are_only_for_squats():
-    prov = FakeProvider()
-    with make_client(InMemoryStore(), CoachAgent(prov)) as c:
+    with make_client(InMemoryStore(), CoachAgent(None)) as c:
         sid = new_session(c, exercise="push-up")
-        cm, ws, _ = _open(c, sid)
+        cm, ws, _ = open_ws(c, sid)
         try:
             _send_sensor_set(ws, sid, "forward_lean")
-            time.sleep(0.2)
-            assert "coaching_feedback" not in _barrier(ws)
+            assert "coaching_feedback" not in _barrier(ws, sid)
         finally:
             cm.__exit__(None, None, None)
-    assert prov.decide_calls == []
 
 
 # ---- spacing between cues ------------------------------------------------------------------------
-
-
-class _Ws:
-    def __init__(self, agent):
-        self.app = SimpleNamespace(state=SimpleNamespace(agent=agent))
 
 
 def _live(last_cue_at=None):
@@ -219,49 +124,105 @@ def _live(last_cue_at=None):
         last_cue_at=last_cue_at,
         counter=SimpleNamespace(rep_count=0),
         session_id="s",
-        agent_tasks=set(),
         socket=None,
         finished=False,
     )
 
 
-def _feed(live, agent, scenario="forward_lean"):
+def _feed(live, sent, scenario="forward_lean", device="esp32-01", first_only=False):
     from app.schemas.sensors import SensorUpdate
 
-    ws = _Ws(agent)
+    async def fake_deliver(ws, live_, decision):
+        live_.last_cue_at = time.monotonic()
+        sent.append(decision)
 
-    async def go():
-        for m in generate(scenario, session_id="00000000-0000-4000-8000-000000000001").messages:
-            await wsmod._coach_posture(ws, live, SensorUpdate.model_validate(m))
+    original = wsmod._deliver_coaching
+    wsmod._deliver_coaching = fake_deliver
+    try:
+        msgs = generate(scenario, session_id="00000000-0000-4000-8000-000000000001").messages
+        if first_only:
+            msgs = msgs[:1]
 
-    run(go())
+        async def go():
+            for m in msgs:
+                await wsmod._coach_posture(None, live, SensorUpdate.model_validate({**m, "device_id": device}))
+
+        run(go())
+    finally:
+        wsmod._deliver_coaching = original
 
 
 def test_a_posture_cue_waits_if_another_cue_just_went_out():
-    prov = FakeProvider()
+    sent = []
     live = _live(last_cue_at=time.monotonic() + 3600)  # "a cue just went out" for the whole replay
-    _feed(live, CoachAgent(prov))
-    assert prov.decide_calls == []  # held back, never sent to the LLM
+    _feed(live, sent)
+    assert sent == []
     assert live.posture["esp32-01"].decisions  # ...although the posture rules did decide on one
 
 
 def test_a_posture_cue_goes_out_when_the_last_cue_is_old():
-    prov = FakeProvider(decide=AgentOutput(action="no_action", message=""))
-    live = _live(last_cue_at=time.monotonic() - wsmod.MIN_CUE_GAP_S - 1)
-    _feed(live, CoachAgent(prov))
-    assert len(prov.decide_calls) == 1
+    sent = []
+    _feed(_live(last_cue_at=time.monotonic() - wsmod.MIN_CUE_GAP_S - 1), sent)
+    assert [d.issue_code for d in sent] == ["excessive_forward_lean"]
+    assert sent[0].source == "rules"
 
 
 def test_only_two_devices_per_workout_get_posture_coaches():
-    from app.schemas.sensors import SensorUpdate
-
-    live = _live()
-    ws = _Ws(CoachAgent(None))
-    m = generate("good_form").messages[0]
-
-    async def go():
-        for device in ("a", "b", "c"):
-            await wsmod._coach_posture(ws, live, SensorUpdate.model_validate({**m, "device_id": device}))
-
-    run(go())
+    live, sent = _live(), []
+    for device in ("a", "b", "c"):
+        _feed(live, sent, scenario="good_form", device=device, first_only=True)
     assert set(live.posture) == {"a", "b"}
+
+
+# ---- the end-of-workout report: deterministic parts ---------------------------------------------
+
+
+def _ctx(*codes, reps=8):
+    return {"supabase": {"stats": {"rep_count": reps}, "coaching_events": [{"issue_code": c} for c in codes]}}
+
+
+def test_every_issue_has_a_label_a_meaning_and_a_focus():
+    for code in (*ISSUE_CODES, "reduced_depth", "asymmetry"):
+        assert code in ISSUE_LABELS and code in ISSUE_MEANINGS and code in FOCUS
+
+
+def test_issues_are_ranked_by_how_often_they_came_up_then_by_first_seen():
+    ranked = issues_seen(_ctx("lateral_shift", "reduced_depth", "reduced_depth", "pain_reported", "excessive_forward_lean"))
+    assert [(i["code"], i["times"]) for i in ranked] == [
+        ("reduced_depth", 2),
+        ("lateral_shift", 1),
+        ("excessive_forward_lean", 1),
+    ]
+    assert ranked[0]["meaning"] == ISSUE_MEANINGS["reduced_depth"]
+
+
+def test_the_report_context_carries_the_issues_and_one_focus_chosen_by_code():
+    rc = report_context(_ctx("excessive_forward_lean", "excessive_forward_lean", "reduced_depth"))
+    assert [i["code"] for i in rc["issues_seen"]] == ["excessive_forward_lean", "reduced_depth"]
+    assert rc["suggested_focus"] == FOCUS["excessive_forward_lean"]
+    assert report_context(_ctx())["suggested_focus"] is None  # no issues: nothing to fix
+
+
+def test_the_rules_report_names_what_came_up_and_one_focus():
+    t = rules_summary(_ctx("rounded_standing_posture", "lateral_shift", "rounded_standing_posture"))
+    assert "upper back tilted forward between reps (2x)" in t and "shoulders tilting to one side" in t
+    assert t.endswith(f"Next time, focus on this: {FOCUS['rounded_standing_posture']}.")
+
+
+def test_after_pain_the_rules_report_gives_no_technique_focus():
+    t = rules_summary(_ctx("excessive_forward_lean", "pain_reported"))
+    assert "focus on this" not in t and "health professional" in t
+
+
+def test_gemini_gets_the_issue_breakdown_and_the_focus():
+    prov = FakeProvider(summarize="Nice work today. Next time, keep your chest a little taller at the bottom of each rep.")
+    text, source = run(CoachAgent(prov).summarize(_ctx("excessive_forward_lean"), "fallback"))
+    assert source == "agent" and text.startswith("Nice work")
+    (sent,) = prov.summarize_calls
+    assert sent["issues_seen"][0]["code"] == "excessive_forward_lean"
+    assert sent["suggested_focus"] == FOCUS["excessive_forward_lean"]
+
+
+def test_a_report_mentioning_the_spine_falls_back_to_the_rules_text():
+    prov = FakeProvider(summarize="Keep your spine neutral next time.")
+    assert run(CoachAgent(prov).summarize(_ctx("excessive_forward_lean"), "fallback")) == ("fallback", "rules")

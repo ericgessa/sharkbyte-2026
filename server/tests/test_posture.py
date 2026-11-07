@@ -18,6 +18,9 @@ from app.services.posture import (
     render_message,
 )
 
+# lateral_shift is off by default until the wearable's roll sign is checked; these tests check the rule itself.
+RULES_ON = PostureConfig(lateral_shift_enabled=True)
+
 SEEDS = range(5)
 
 # Issues a scenario may also legitimately show besides its labelled ones. lean_creep ends at about 60 deg,
@@ -33,7 +36,7 @@ def _all_findings(coach: PostureCoach) -> set[str]:
 @pytest.mark.parametrize("name", SCENARIOS)
 def test_finds_exactly_the_labelled_issues(name, seed):
     rec = generate(name, seed=seed)
-    found = _all_findings(analyze(rec.messages))
+    found = _all_findings(analyze(rec.messages, RULES_ON))
     expected = set(rec.labels["expected_issues"])
     assert expected <= found, f"missed {expected - found}"
     assert found <= expected | ALSO_ALLOWED.get(name, set()), f"false alarm {found - expected}"
@@ -43,7 +46,7 @@ def test_finds_exactly_the_labelled_issues(name, seed):
 @pytest.mark.parametrize("name", SCENARIOS)
 def test_reps_line_up_with_the_labels(name, seed):
     rec = generate(name, seed=seed)
-    coach = analyze(rec.messages)
+    coach = analyze(rec.messages, RULES_ON)
     labelled = rec.labels["reps"]
     dropped = rec.labels["dropouts"]
 
@@ -82,8 +85,12 @@ def test_one_warning_per_rep_highest_priority_first():
     assert decision.evidence["early_reps_peak_pitch_deg"] < min(decision.evidence["recent_peak_pitch_deg"])
 
 
+def test_lateral_shift_is_off_by_default():
+    assert analyze(generate("lateral_shift").messages).decisions == []
+
+
 def test_lateral_shift_names_the_side():
-    [d] = analyze(generate("lateral_shift").messages).decisions
+    [d] = analyze(generate("lateral_shift").messages, RULES_ON).decisions
     assert d.evidence["side"] == "right"
     assert "to the right" in d.message
 

@@ -268,7 +268,11 @@ def open_ws(client, sid, token="alice-token"):
     return cm, ws, ws.receive_json()
 
 
-def test_the_llms_wording_reaches_the_user_and_is_saved_as_what_they_actually_saw():
+# Reporter-only (team decision 2026-11-07): during the workout every cue is the rule message, sent at once, and the
+# LLM is never consulted, even when it is configured and would answer. Gemini only writes the recap afterwards.
+
+
+def test_live_cues_are_the_rule_message_even_with_the_llm_on():
     store = InMemoryStore()
     prov = FakeProvider(decide=AgentOutput(action="send_feedback", message="Try to keep your depth like your first reps."))
     with make_client(store, CoachAgent(prov)) as c:
@@ -280,123 +284,30 @@ def test_the_llms_wording_reaches_the_user_and_is_saved_as_what_they_actually_sa
         finally:
             cm.__exit__(None, None, None)
     fb = next(e for e in events if e["type"] == "coaching_feedback")
-    assert fb["message"] == "Try to keep your depth like your first reps." and fb["source"] == "agent"
+    assert fb["source"] == "rules" and fb["message"].startswith("Your depth has decreased")
     assert fb["issue_code"] == "reduced_depth" and fb["rep_count"] == 5
     assert wait_for(lambda: len(store.events.get(sid, {})) == 1)
     (saved,) = store.events[sid].values()
-    assert saved["message"] == fb["message"] and saved["issue_code"] == "reduced_depth"  # the record matches the screen
-    ctx = prov.decide_calls[0]
-    assert ctx["exercise"] == "squat" and ctx["detected_issue"]["code"] == "reduced_depth" and ctx["reps_completed"] == 5
+    assert saved["message"] == fb["message"]  # the record matches the screen
+    assert prov.decide_calls == []
 
 
-def test_if_the_llm_fails_the_user_gets_the_rule_message_exactly_as_before():
-    store = InMemoryStore()
-    with make_client(store, CoachAgent(FakeProvider(decide=RuntimeError("API down")))) as c:
+def test_a_stuck_llm_cannot_delay_reps_or_cues():
+    gate = threading.Event()  # this provider would never answer
+    prov = FakeProvider(gate=gate)
+    with make_client(InMemoryStore(), CoachAgent(prov, timeout_s=30)) as c:
         sid = new_session(c)
         cm, ws, _ = open_ws(c, sid)
         try:
             stream(ws, sid)
-            events = [ws.receive_json() for _ in range(6)]
-        finally:
-            cm.__exit__(None, None, None)
-    fb = next(e for e in events if e["type"] == "coaching_feedback")
-    assert fb["source"] == "rules" and fb["message"].startswith("Your depth has decreased")
-
-
-def test_no_action_means_no_cue_is_shown_or_saved():
-    store = InMemoryStore()
-    with make_client(store, CoachAgent(FakeProvider(decide=AgentOutput(action="no_action", message="")))) as c:
-        sid = new_session(c)
-        cm, ws, _ = open_ws(c, sid)
-        try:
-            stream(ws, sid)
-            assert [ws.receive_json()["type"] for _ in range(5)] == ["rep_completed"] * 5
-            ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": sid, "signal": "pause"}))
-            assert ws.receive_json()["type"] == "session_state"  # nothing stray was queued before the reply
-        finally:
-            cm.__exit__(None, None, None)
-        time.sleep(0.2)
-    assert store.events.get(sid, {}) == {}
-
-
-def test_a_slow_llm_never_delays_rep_counting():
-    store, gate = InMemoryStore(), threading.Event()
-    prov = FakeProvider(gate=gate)  # the LLM is "thinking" until we open the gate
-    with make_client(store, CoachAgent(prov, timeout_s=30)) as c:
-        sid = new_session(c)
-        cm, ws, _ = open_ws(c, sid)
-        try:
-            stream(ws, sid)
-            reps = [ws.receive_json() for _ in range(5)]  # all five arrive while the LLM is still blocked
-            assert [r["type"] for r in reps] == ["rep_completed"] * 5 and not gate.is_set()
-            gate.set()
-            assert ws.receive_json()["type"] == "coaching_feedback"  # the cue follows when the LLM answers
-        finally:
-            gate.set()
-            cm.__exit__(None, None, None)
-
-
-def test_a_pain_report_while_the_llm_is_thinking_cancels_the_technique_cue():
-    store, gate = InMemoryStore(), threading.Event()
-    with make_client(store, CoachAgent(FakeProvider(gate=gate), timeout_s=30)) as c:
-        sid = new_session(c)
-        cm, ws, _ = open_ws(c, sid)
-        try:
-            stream(ws, sid)
-            [ws.receive_json() for _ in range(5)]
-            ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": sid, "signal": "pain"}))
-            pain, state = ws.receive_json(), ws.receive_json()
-            assert pain["issue_code"] == "pain_reported" and state["coaching_enabled"] is False
-            gate.set()  # the LLM now answers: it must be ignored
-            time.sleep(0.4)
-            ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": sid, "signal": "pause"}))
-            assert ws.receive_json()["type"] == "session_state"  # no technique cue slipped in before this reply
-        finally:
-            gate.set()
-            cm.__exit__(None, None, None)
-    assert wait_for(lambda: len(store.events.get(sid, {})) == 1)
-    assert [e["issue_code"] for e in store.events[sid].values()] == ["pain_reported"]
-
-
-def test_finishing_while_the_llm_is_thinking_is_not_delayed_and_drops_the_late_cue():
-    store, gate = InMemoryStore(), threading.Event()
-    with make_client(store, CoachAgent(FakeProvider(gate=gate), timeout_s=30)) as c:
-        sid = new_session(c)
-        cm, ws, _ = open_ws(c, sid)
-        try:
-            stream(ws, sid)
-            [ws.receive_json() for _ in range(5)]
             t = time.monotonic()
-            r = c.post(f"/api/workouts/{sid}/finish", headers=ALICE)
-            assert r.status_code == 200 and r.json()["total_reps"] == 5 and time.monotonic() - t < 2
-            gate.set()
-            time.sleep(0.3)
+            types = [ws.receive_json()["type"] for _ in range(6)]
+            assert types.count("rep_completed") == 5 and "coaching_feedback" in types
+            assert time.monotonic() - t < 2
         finally:
             gate.set()
             cm.__exit__(None, None, None)
-    assert store.events.get(sid, {}) == {}  # the late cue was dropped, not saved against a finished workout
-
-
-def test_a_cue_goes_to_the_connection_that_is_current_when_the_llm_answers():
-    store, gate = InMemoryStore(), threading.Event()
-    with make_client(store, CoachAgent(FakeProvider(gate=gate), timeout_s=30)) as c:
-        sid = new_session(c)
-        cm_old, old, _ = open_ws(c, sid)
-        try:
-            stream(old, sid)
-            [old.receive_json() for _ in range(5)]
-            with c.websocket_connect(f"/ws/workouts/{sid}") as new:  # the phone reconnected while the LLM thought
-                new.send_text(json.dumps(auth_message()))
-                assert new.receive_json()["type"] == "session_ready"
-                gate.set()
-                fb = new.receive_json()
-                assert fb["type"] == "coaching_feedback" and fb["source"] == "agent"
-        finally:
-            gate.set()
-            try:
-                cm_old.__exit__(None, None, None)
-            except Exception:
-                pass
+    assert prov.decide_calls == []
 
 
 def test_an_exercise_without_analysis_never_involves_the_llm():

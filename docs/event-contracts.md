@@ -17,7 +17,7 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 | GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
 | DELETE | `/api/workouts/{session_id}` | **Permanently** deletes the workout from both databases: its reps and coaching events (Supabase) and its sensor readings (Tiger Data). 204 on success; 404 if it is not yours or does not exist (so deleting twice is a 404); 503 if sensor data could not be deleted right now, in which case **nothing** was deleted and it is safe to retry. A socket that is still streaming that workout is closed with `4409`. There is no undo, so the app should confirm first |
 | GET | `/api/workouts/{session_id}/summary` | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far) |
-| GET | `/api/workouts/{session_id}/coach-summary` | 200 `{"summary": "<3-4 sentence recap>", "source": "agent"\|"rules"}`: a plain-language recap of the workout for the end-of-workout screen. `source: "rules"` is a deterministic recap (used when the AI coach is off, unavailable, or the user reported pain). Finished workouts are cached. At most ~6 per minute per user (429 beyond that) |
+| GET | `/api/workouts/{session_id}/coach-summary` | 200 `{"summary": "<4-5 sentence report>", "source": "agent"\|"rules"}`: the end-of-workout report: reps, the form issues flagged and attempts not counted (most frequent first), and one thing to focus on next time. `source: "agent"` = Gemini wrote it (the only place an LLM is used); `"rules"` = the deterministic report (AI coach off, unavailable, failed a check, or the user reported pain). Can take up to ~20 s with Gemini. Finished workouts are cached. At most ~6 per minute per user (429 beyond that) |
 | GET | `/api/workouts/{session_id}/analytics` | 200 compact analytics: `supabase` (rep stats, coaching events) + `timeseries` (SQL summaries from Tiger Data, per-rep depth/range trends). `timeseries.available` is `false` with a `reason` (`not_configured` / `unavailable`) when Tiger Data is off or down |
 | GET | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window |
 | POST | `/api/workouts/{session_id}/finish` | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry) |
@@ -270,10 +270,9 @@ exercises and `null` for elbow exercises, so new code should read `min_angle_deg
 }
 ```
 
-`source` is `"rules"` (the deterministic coach's message) or `"agent"` (an LLM worded it; only when the server has the
-AI coach enabled, see `docs/AI_COACH.md`). Show `message` the same way either way. With the AI coach on, a cue may
-arrive a few seconds **after** its `rep_completed` (the model takes a moment, and the app keeps counting meanwhile),
-or not at all if the model judged it unhelpful. Never assume a cue is immediate.
+Live cues are **deterministic**: `source` is always `"rules"` during a workout, and a cue arrives right after the
+`rep_completed` that triggered it (team decision 2026-11-07: Gemini is only the end-of-workout reporter, see
+`coach-summary`). `"agent"` stays a valid value but the server no longer sends it live.
 Issue codes: `reduced_depth` (last 2 reps clearly shallower than the median of the first 3),
 `asymmetry` (left/right knee angles differ a lot in 2 reps in a row). Feedback is rate-limited: none
 until 3 reps exist, at least 2 reps between messages, 4 reps before repeating an issue, max 6 per
@@ -283,12 +282,43 @@ untuned starting values (`CoachConfig` in `server/app/services/coaching.py`).
 use the same event and the same `source` rules. They are not tied to a `rep_completed`: `rep_count` is the camera's
 current count, or the IMU's own rep number when no camera frames arrive. Issue codes: `forward_lean_increasing`
 (peak upper-back lean at least 8° more than in the first 3 reps), `excessive_forward_lean` (peak lean at least 55°
-from vertical), `lateral_shift` (shoulders tilted at least 5° to the same side at the bottom of 2 reps),
-`rounded_standing_posture` (standing tilt at least 15° from vertical). Each must show in 2 reps in a row; 2 reps
-between posture cues, 4 before the same one repeats, max 6 per session; and no posture cue within 6 s of any other
-cue. Their wording never contains numbers (the angles are not calibrated yet). A pain report stops them too.
-Thresholds are untuned values chosen on SIMULATED data.
+from vertical), `rounded_standing_posture` (standing tilt at least 15° from vertical), and `lateral_shift` (shoulders
+tilted at least 5° to the same side at the bottom of 2 reps; **off by default** until the wearable's roll sign is
+checked). Each must show in 2 reps in a row; 2 reps between posture cues, 4 before the same one repeats, max 6 per
+session; and no posture cue within 6 s of any other cue. A pain report stops them too. Thresholds are untuned values
+chosen on SIMULATED data.
+
+**Back-shape cues** (form IQ, `server/app/services/spine_form.py`, `docs/form-iq.md`) come from the wearable's section
+angles (`spine_upper_deg` / `spine_mid_deg` / `spine_lumbar_deg`) inside each **counted** rep's time window, for
+push-ups and squats. Same event, `source: "rules"`, sent right after that rep's `rep_completed`, at most one cue per
+rep (a camera cue for the same rep goes first). Issue codes: `hips_sagging` (push-up: lumbar at or below −8° for at
+least half the rep), `hips_piking` (push-up: lumbar at or above +10° for at least half the rep),
+`lower_back_rounding` (squat: lumbar at or above +15° for at least 30% of the rep). Each must show in 2 judged reps in
+a row; same rate limits as above. They warn only: back shape never stops a rep from counting. Every counted rep's
+back-shape record is saved with the rep (`repetitions.metrics.spine`). Untuned values from SIMULATED data.
 Clients should treat `issue_code` as an open set and show `message` as-is.
+
+`rep_rejected` — an attempt that did **not** count, and why (form IQ). `rep_count` is unchanged:
+
+```json
+{
+  "schema_version": 1,
+  "type": "rep_rejected",
+  "session_id": "UUID",
+  "rep_count": 4,
+  "reason": "partial_range",
+  "message": "That one didn't count: go a little lower so you reach the bottom.",
+  "min_angle_deg": 124.6,
+  "joint": "knee",
+  "duration_ms": 1320
+}
+```
+
+`reason`: `partial_range` (went at least halfway from leaving the top to the bottom threshold, but never reached the
+bottom; smaller dips are ignored silently) or `too_fast` (reached the bottom, but the whole attempt took less than the
+exercise's minimum rep time). Show `message` as-is. Each one is also saved to `coaching_events` with
+`issue_code` = the reason and `action: "rep_rejected"`, so it appears in the workout summary and the report. Apps
+that don't know this event can ignore it (the reference app's parser drops unknown types).
 
 `session_state` — the reply to every `user_signal`:
 `{"type":"session_state","session_id":"UUID","paused":false,"coaching_enabled":true}`
