@@ -267,6 +267,24 @@ Things to know:
 - Tests: `npm run test:pose` (27 pure-logic tests, no browser). The backend suite also runs the TypeScript
   (`server/tests/test_frontend_contract.py`) and checks that what it produces is accepted by the real server.
 
+**Push-up mini test:** section 3 of the lab has a *Run push-up test* button. It creates its own push-up workout,
+streams 5 simulated push-ups (elbow angles, the last two shallower) to the backend and prints PASS or FAIL with one
+line per check (workout created, socket authenticated, 5 reps counted on the elbow, coach cue, 5 reps saved). It needs
+the API URL and token from section 2 and no camera. For a real-camera try, press *Exercise: push-up*, Start camera,
+Start workout, and do push-ups side-on to the camera so one elbow is clearly visible. The push-up thresholds are
+untuned guesses.
+
+**On a phone:**
+
+- *Expo Go* can run the app's normal screens against the backend (REST, WebSocket and Supabase login all work from
+  it), as long as the phone can reach the API (same Wi-Fi and the laptop's LAN address, or a tunnel; see
+  `EXPO_PUBLIC_API_URL`). It **cannot** do the MediaPipe pose tracking: that needs native modules, which means a
+  development build, and native pose tracking is not built.
+- The **Pose lab in the phone's browser** can use the phone camera, because the lab is web code. Browsers only give
+  the camera to `https://` pages or `localhost`, and an `https://` page may not call a plain `http://` API (mixed
+  content). So both the lab and the API need `https://` tunnel addresses (and `wss://` is derived from the API URL).
+  Not tried on a phone yet.
+
 Verified so far: model loads in a browser (GPU delegate), real inference on a still image returns angles, and the
 simulated stream through the lab reaches the live backend (5 reps counted, the depth cue comes back). **Not
 verified:** a live camera with a person moving, accuracy of the angles against real squats, mobile devices,

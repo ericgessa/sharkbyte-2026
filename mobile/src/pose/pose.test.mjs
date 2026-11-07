@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { computePoseAngles, jointAngleDeg, LM } from './angles.ts';
 import { LIBRARY_URL, MEDIAPIPE_VERSION, MODEL_URL, WASM_BASE } from './mediapipe.web.ts';
 import { parseServerEvent, PoseStreamer } from './protocol.ts';
-import { simulatedSquatFrames } from './simulate.ts';
+import { simulatedPushUpFrames, simulatedSquatFrames } from './simulate.ts';
 import { createWorkout, finishWorkout, toWsUrl, WorkoutSocket } from './workout-client.ts';
 
 const near = (a, b, eps = 0.06) => assert.ok(Math.abs(a - b) <= eps, `${a} is not within ${eps} of ${b}`);
@@ -307,6 +307,15 @@ test('simulated squats match the backend simulator: depths, rest, asymmetry, no 
   near(deepest(10, 92), 84, 0.2); // first rep bottoms out near 85 (left knee reads 1 degree lower)
   near(deepest(10 + 3 * 82, 10 + 5 * 82), 97, 0.2); // the last two reps are shallower: this is what triggers the coach
   assert.ok(frames.every((f) => f.left_knee_angle_deg >= 0 && f.right_knee_angle_deg <= 180));
+});
+
+test('simulated push-ups move the elbow angle, not the knee', () => {
+  const frames = simulatedPushUpFrames({ depths: [80, 80, 95] });
+  assert.ok(frames.every((f) => f.left_knee_angle_deg === null && f.right_knee_angle_deg === null));
+  const elbows = frames.map((f) => f.left_elbow_angle_deg);
+  assert.ok(elbows.every((v) => v !== null && v >= 0 && v <= 180));
+  assert.ok(Math.min(...elbows.slice(0, 70)) < 82 && Math.max(...elbows) > 160); // first rep reaches ~80, tops out near 165
+  assert.ok(Math.min(...elbows.slice(-70)) > 93); // the last rep is shallower (95)
 });
 
 // ---------------------------------------------------------------- MediaPipe loading configuration

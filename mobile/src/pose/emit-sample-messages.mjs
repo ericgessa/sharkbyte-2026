@@ -4,7 +4,7 @@
 //                                  src/pose/emit-sample-messages.mjs <session-uuid>
 import { computePoseAngles, LM } from './angles.ts';
 import { PoseStreamer } from './protocol.ts';
-import { simulatedSquatFrames } from './simulate.ts';
+import { simulatedPushUpFrames, simulatedSquatFrames } from './simulate.ts';
 import { WorkoutSocket } from './workout-client.ts';
 
 const sessionId = process.argv[2] ?? '00000000-0000-0000-0000-000000000000';
@@ -17,6 +17,16 @@ for (const frame of simulatedSquatFrames({ depths: [85, 85, 85, 98, 98] })) {
   const update = streamer.next(frame);
   if (update) stream.push(update);
   clock += 34; // ~29 fps, just inside the 30 fps cap
+}
+
+// 1b) The same for 5 push-ups (elbow angles; depth drops on the last two).
+clock = 1_800_000_000_000;
+const pushStreamer = new PoseStreamer(sessionId, 30, () => clock);
+const pushups = [];
+for (const frame of simulatedPushUpFrames({ depths: [80, 80, 80, 95, 95] })) {
+  const update = pushStreamer.next(frame);
+  if (update) pushups.push(update);
+  clock += 34;
 }
 
 // 2) What the socket sends: the auth handshake and the three user signals.
@@ -45,4 +55,4 @@ lm[LM.LEFT_HIP] = { x: 0, y: 2, z: 0, visibility: 0.9 };
 lm[LM.LEFT_KNEE] = { x: 0, y: 3, z: 0, visibility: 0.9 };
 const upper = new PoseStreamer(sessionId, 30, () => clock).next(computePoseAngles(lm));
 
-console.log(JSON.stringify({ stream, auth, signals, upper }));
+console.log(JSON.stringify({ stream, pushups, auth, signals, upper }));
