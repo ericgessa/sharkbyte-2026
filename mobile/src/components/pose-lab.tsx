@@ -1,0 +1,325 @@
+import { useEffect, useRef, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { PoseCamera, type PoseFrameInfo } from '@/components/pose-camera';
+import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
+import { MaxContentWidth, Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
+import { computePoseAngles, type PoseAngles } from '@/pose/angles';
+import { detectOnImageUrl } from '@/pose/mediapipe';
+import { PoseStreamer, type ServerEvent } from '@/pose/protocol';
+import { simulatedSquatFrames } from '@/pose/simulate';
+import { createWorkout, finishWorkout, WorkoutSocket, type CreatedWorkout } from '@/pose/workout-client';
+
+const DEFAULT_API = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8000';
+
+const CLOSE_HINT: Record<number, string> = {
+  1006: 'connection lost',
+  1009: 'message too large',
+  4401: 'login rejected or expired: paste a fresh access token',
+  4404: 'workout not found',
+  4409: 'workout already finished',
+  4410: 'taken over by another connection',
+};
+
+type Phase = 'idle' | 'starting' | 'live' | 'finished';
+
+const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const fmt = (v: number | null) => (v === null ? '-' : `${v.toFixed(1)}`);
+
+/**
+ * Developer lab for the camera pipeline: MediaPipe pose tracking in the browser -> joint angles -> the SharkByte
+ * backend, with live rep counts and coaching cues coming back. NOT the product UI: the real app signs the user in
+ * with Supabase; here you paste an access token (see docs/frontend-integration.md).
+ * Also has a "simulate squats" button and an image test, so the backend loop can be exercised without a camera.
+ */
+export function PoseLab() {
+  const theme = useTheme();
+  const [apiUrl, setApiUrl] = useState(DEFAULT_API);
+  const [token, setToken] = useState('');
+  const [exercise, setExercise] = useState('squat');
+  const [phase, setPhase] = useState<Phase>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [connection, setConnection] = useState('not connected');
+  const [reps, setReps] = useState(0);
+  const [analysis, setAnalysis] = useState<boolean | null>(null);
+  const [cue, setCue] = useState<string | null>(null);
+  const [tracking, setTracking] = useState<'ok' | 'lost'>('ok');
+  const [log, setLog] = useState<string[]>([]);
+  const [angles, setAngles] = useState<PoseAngles | null>(null);
+  const [fps, setFps] = useState(0);
+  const [simulating, setSimulating] = useState(false);
+  const [imageUrl, setImageUrl] = useState('');
+  const [imageResult, setImageResult] = useState<string | null>(null);
+
+  const workoutRef = useRef<CreatedWorkout | null>(null);
+  const socketRef = useRef<WorkoutSocket | null>(null);
+  const streamerRef = useRef<PoseStreamer | null>(null);
+  const latestRef = useRef<PoseAngles | null>(null);
+  const fpsRef = useRef(0);
+  const simTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const note = (line: string) => setLog((l) => [line, ...l].slice(0, 8));
+
+  // The readout refreshes about 5 times a second; frames themselves are not held in React state.
+  useEffect(() => {
+    const id = setInterval(() => {
+      setAngles(latestRef.current);
+      setFps(fpsRef.current);
+    }, 200);
+    return () => clearInterval(id);
+  }, []);
+
+  const stopSimulation = () => {
+    if (simTimer.current) clearInterval(simTimer.current);
+    simTimer.current = null;
+    setSimulating(false);
+  };
+
+  useEffect(
+    () => () => {
+      if (simTimer.current) clearInterval(simTimer.current);
+      socketRef.current?.close();
+    },
+    [],
+  );
+
+  const pushAngles = (a: PoseAngles) => {
+    const update = streamerRef.current?.next(a);
+    if (update) socketRef.current?.sendPose(update);
+  };
+
+  const onFrame = (info: PoseFrameInfo) => {
+    latestRef.current = info.angles;
+    fpsRef.current = info.fps;
+    if (info.angles) pushAngles(info.angles);
+  };
+
+  const handleEvent = (e: ServerEvent) => {
+    switch (e.type) {
+      case 'session_ready':
+        setConnection('connected');
+        setAnalysis(e.analysis_supported);
+        setReps(e.rep_count);
+        note(`ready: ${e.exercise}${e.analysis_supported ? '' : ' (logged only: reps are not counted for this exercise yet)'}`);
+        break;
+      case 'rep_completed':
+        setReps(e.rep_count);
+        note(`rep ${e.rep_count}: deepest ${e.metrics.min_knee_angle_deg} deg, ${e.metrics.duration_ms} ms`);
+        break;
+      case 'coaching_feedback':
+        setCue(e.message);
+        note(`coach (${e.source}): ${e.message}`);
+        break;
+      case 'tracking_status':
+        setTracking(e.tracking === 'lost' ? 'lost' : 'ok');
+        note(`tracking ${e.tracking}`);
+        break;
+      case 'session_state':
+        note(`paused=${e.paused} coaching=${e.coaching_enabled}`);
+        break;
+      case 'error':
+        note(`server error: ${e.code} ${e.detail}`);
+        break;
+    }
+  };
+
+  const startWorkout = async () => {
+    const accessToken = token.trim();
+    if (!accessToken) {
+      setError('Paste a Supabase access token first.');
+      return;
+    }
+    setError(null);
+    setPhase('starting');
+    setReps(0);
+    setCue(null);
+    setLog([]);
+    setTracking('ok');
+    try {
+      const w = await createWorkout(apiUrl, accessToken, exercise.trim() || 'squat');
+      workoutRef.current = w;
+      streamerRef.current = new PoseStreamer(w.session_id);
+      const socket = new WorkoutSocket(apiUrl, w.session_id, accessToken, {
+        onEvent: handleEvent,
+        onClose: (code) => setConnection(`closed (${code}${CLOSE_HINT[code] ? `: ${CLOSE_HINT[code]}` : ''})`),
+        onError: () => setConnection('connection error'),
+      });
+      socketRef.current = socket;
+      setConnection('connecting...');
+      socket.connect();
+      setPhase('live');
+    } catch (e) {
+      setError(messageOf(e));
+      setPhase('idle');
+    }
+  };
+
+  const finish = async () => {
+    stopSimulation();
+    const w = workoutRef.current;
+    if (!w) return;
+    try {
+      const r = await finishWorkout(apiUrl, token.trim(), w.session_id);
+      note(`finished: ${r.total_reps} reps saved`);
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      socketRef.current?.close();
+      socketRef.current = null;
+      streamerRef.current = null;
+      setPhase('finished');
+    }
+  };
+
+  const signal = (s: 'pause' | 'resume' | 'pain') => {
+    const w = workoutRef.current;
+    if (w) socketRef.current?.sendSignal(w.session_id, s);
+  };
+
+  const simulate = () => {
+    if (simTimer.current) return;
+    const frames = simulatedSquatFrames({ depths: [85, 85, 85, 98, 98] });
+    let i = 0;
+    setSimulating(true);
+    note('simulating 5 squats (synthetic data, no camera)');
+    simTimer.current = setInterval(() => {
+      if (i >= frames.length) {
+        stopSimulation();
+        return;
+      }
+      const a = frames[i++];
+      latestRef.current = a;
+      pushAngles(a);
+    }, 34);
+  };
+
+  const testImage = async () => {
+    setImageResult('detecting...');
+    try {
+      const frame = await detectOnImageUrl(imageUrl.trim());
+      if (!frame) return setImageResult('No person detected in that image.');
+      const a = computePoseAngles(frame.worldLandmarks, frame.landmarks);
+      setImageResult(a ? JSON.stringify(a) : 'A person was detected, but no joint was visible enough to measure.');
+    } catch (e) {
+      setImageResult(messageOf(e));
+    }
+  };
+
+  const inputStyle = [styles.input, { color: theme.text, borderColor: theme.backgroundSelected, backgroundColor: theme.background }];
+  const live = phase === 'live';
+
+  return (
+    <ThemedView style={styles.container}>
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.scroll}>
+          <ThemedText type="subtitle">Pose lab</ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            Developer tool: MediaPipe pose tracking in the browser, streamed to the backend. Everything is processed on
+            this device; the camera image never leaves it.
+          </ThemedText>
+
+          <Section title="1. Camera and angles">
+            <PoseCamera onFrame={onFrame} />
+            <ThemedText type="code" testID="pose-angles">
+              {angles
+                ? `knee L ${fmt(angles.left_knee_angle_deg)}  R ${fmt(angles.right_knee_angle_deg)} | elbow L ${fmt(angles.left_elbow_angle_deg)}  R ${fmt(angles.right_elbow_angle_deg)} | hip L ${fmt(angles.left_hip_angle_deg)}  R ${fmt(angles.right_hip_angle_deg)} | confidence ${angles.landmark_confidence.toFixed(2)} | ${fps} fps`
+                : 'no person in view'}
+            </ThemedText>
+          </Section>
+
+          <Section title="2. Backend">
+            <ThemedText type="small" themeColor="textSecondary">
+              Paste the signed-in user&apos;s Supabase ACCESS token (not the publishable key). The real app does the sign-in.
+            </ThemedText>
+            <TextInput style={inputStyle} value={apiUrl} onChangeText={setApiUrl} autoCapitalize="none" autoCorrect={false} placeholder="API URL" placeholderTextColor={theme.textSecondary} testID="lab-api-url" />
+            <TextInput style={inputStyle} value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} secureTextEntry placeholder="access token" placeholderTextColor={theme.textSecondary} testID="lab-token" />
+            <TextInput style={inputStyle} value={exercise} onChangeText={setExercise} autoCapitalize="none" autoCorrect={false} placeholder="exercise (squat)" placeholderTextColor={theme.textSecondary} testID="lab-exercise" />
+            <View style={styles.row}>
+              <Btn label={phase === 'starting' ? 'Starting...' : 'Start workout'} onPress={startWorkout} disabled={phase === 'starting' || live} testID="lab-start" />
+              <Btn label="Finish" onPress={finish} disabled={!live} testID="lab-finish" />
+              <Btn label="Pause" onPress={() => signal('pause')} disabled={!live} />
+              <Btn label="Resume" onPress={() => signal('resume')} disabled={!live} />
+              <Btn label="Pain / stop" onPress={() => signal('pain')} disabled={!live} danger />
+            </View>
+            {error && (
+              <ThemedText type="small" style={styles.error} testID="lab-error">
+                {error}
+              </ThemedText>
+            )}
+            <ThemedText type="code" testID="lab-status">
+              connection: {connection} | reps: {reps} | tracking: {tracking}
+              {analysis === false ? ' | exercise is logged only (no rep counting yet)' : ''}
+            </ThemedText>
+            {cue && <ThemedText testID="lab-cue">Coach: {cue}</ThemedText>}
+            {log.map((line, i) => (
+              <ThemedText key={`${i}-${line}`} type="code" themeColor="textSecondary">
+                {line}
+              </ThemedText>
+            ))}
+          </Section>
+
+          <Section title="3. No camera? Test without one">
+            <View style={styles.row}>
+              <Btn label={simulating ? 'Simulating...' : 'Simulate 5 squats'} onPress={simulate} disabled={!live || simulating} testID="lab-simulate" />
+            </View>
+            <ThemedText type="small" themeColor="textSecondary">
+              Streams synthetic knee angles (depth drops on the last two reps, so the coach should speak) through the same
+              path as real tracking. Start a workout first.
+            </ThemedText>
+            <TextInput style={inputStyle} value={imageUrl} onChangeText={setImageUrl} autoCapitalize="none" autoCorrect={false} placeholder="image URL with a person in it (host must allow CORS)" placeholderTextColor={theme.textSecondary} testID="lab-image-url" />
+            <View style={styles.row}>
+              <Btn label="Detect pose in image" onPress={testImage} testID="lab-image-detect" />
+            </View>
+            {imageResult && (
+              <ThemedText type="code" testID="lab-image-result">
+                {imageResult}
+              </ThemedText>
+            )}
+          </Section>
+        </ScrollView>
+      </SafeAreaView>
+    </ThemedView>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <ThemedView type="backgroundElement" style={styles.section}>
+      <ThemedText type="smallBold">{title}</ThemedText>
+      {children}
+    </ThemedView>
+  );
+}
+
+function Btn({ label, onPress, disabled, danger, testID }: { label: string; onPress: () => void; disabled?: boolean; danger?: boolean; testID?: string }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      testID={testID}
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [styles.button, danger && styles.buttonDanger, disabled && styles.buttonDisabled, pressed && styles.pressed]}>
+      <ThemedText type="smallBold" style={styles.buttonText}>
+        {label}
+      </ThemedText>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, flexDirection: 'row', justifyContent: 'center' },
+  safeArea: { flex: 1, maxWidth: MaxContentWidth },
+  scroll: { padding: Spacing.three, gap: Spacing.three },
+  section: { gap: Spacing.two, padding: Spacing.three, borderRadius: Spacing.three },
+  row: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
+  input: { borderWidth: 1, borderRadius: Spacing.two, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three, fontSize: 14 },
+  button: { backgroundColor: '#3c87f7', borderRadius: Spacing.two, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three },
+  buttonDanger: { backgroundColor: '#d93025' },
+  buttonDisabled: { opacity: 0.4 },
+  buttonText: { color: '#ffffff' },
+  pressed: { opacity: 0.7 },
+  error: { color: '#d93025' },
+});

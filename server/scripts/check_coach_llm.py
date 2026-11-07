@@ -2,11 +2,11 @@
 
     python -m scripts.check_coach_llm        (run from server/)
 
-Needs COACH_LLM_PROVIDER=anthropic and an Anthropic credential (ANTHROPIC_API_KEY in server/.env, or a logged-in
-`ant` profile). It COSTS a small amount of real money (two short requests). Nothing is written to any database.
+Needs COACH_LLM_PROVIDER=gemini (or anthropic) and that vendor's key in server/.env (GEMINI_API_KEY, or
+ANTHROPIC_API_KEY). It may cost a small amount of real money (two short requests). Nothing is written to any database.
 
 It checks the one thing the offline tests cannot: that the real API accepts the requests this code sends
-(model id, schema-constrained JSON output, effort) and that the replies pass the safety checks. A "FELL BACK"
+(model id, schema-constrained JSON output) and that the replies pass the safety checks. A "FELL BACK"
 result is not necessarily a bug (the checks are strict on purpose): read the reason it prints.
 """
 
@@ -24,7 +24,7 @@ from app.services.rep_counter import RepMetrics
 def main() -> int:
     agent = agent_from_env()
     if not agent.enabled:
-        print("The coach LLM is OFF. Set COACH_LLM_PROVIDER=anthropic and an Anthropic key in server/.env (see .env.example).")
+        print("The coach LLM is OFF. Set COACH_LLM_PROVIDER=gemini (or anthropic) and the matching API key in server/.env (see .env.example).")
         return 2
 
     reps = [RepMetrics(i, d, 400, 400, 1700, 2.0) for i, d in enumerate([85, 85, 85, 98, 98], start=1)]

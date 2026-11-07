@@ -1,9 +1,10 @@
 # The AI coach (LLM layer)
 
-**Status: built and tested offline; NOT yet run against a real model.** No Anthropic credential existed when this was
-written, so nothing has been sent to the real API. What is verified: the guardrails, every failure path, the exact HTTP
-requests the adapter sends and how it reads replies (against a fake transport), and the behavior inside the live workout
-loop. What is not: that the real API accepts these requests and that real model output passes the safety checks.
+**Status: built and tested offline; NOT yet run against a real model.** No API key existed when this was written, so
+nothing has been sent to a real API. Two providers are implemented: **Gemini** (the team's plan) and Anthropic's Claude.
+What is verified for both: the guardrails, every failure path, the exact HTTP requests each adapter sends and how it reads
+replies (the vendors' real SDKs run against a fake HTTP server), and the behavior inside the live workout loop. What is
+not: that the real APIs accept these requests and that real model output passes the safety checks.
 `python -m scripts.check_coach_llm` is the first live test (2 short requests, small cost); run it as soon as you have a
 key, and treat a failure there as a bug in this layer.
 
@@ -52,34 +53,45 @@ JSON, any schema violation. A failed call is not retried (the rule message is th
 
 ## Turn it on
 
-In `server/.env` (backend only; never in the mobile app):
+In `server/.env` (backend only; never in the mobile app). Get a Gemini key from Google AI Studio.
 
 ```
-COACH_LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=your-anthropic-key
+COACH_LLM_PROVIDER=gemini
+GEMINI_API_KEY=your-gemini-key
 # optional:
-COACH_LLM_MODEL=claude-opus-5-5
+COACH_LLM_MODEL=gemini-3.5-flash-lite
 COACH_LLM_TIMEOUT_S=6
 ```
 
-Restart the server, then run `python -m scripts.check_coach_llm`. The default model is `claude-opus-5-5`; you can set
-`COACH_LLM_MODEL` to a cheaper or faster model if latency or cost matters (that is your call; the checks above apply
-to any model). Opus-class models always think before answering, so a cue may take a few seconds: that is why a cue can
-arrive a moment after its `rep_completed`, and why there is a timeout with a rule fallback.
+Restart the server, then run `python -m scripts.check_coach_llm`.
+
+* **Gemini** (`COACH_LLM_PROVIDER=gemini`, alias `google`): key `GEMINI_API_KEY` (the SDK also accepts `GOOGLE_API_KEY`; if both
+  are set it prefers `GOOGLE_API_KEY`). Default model `gemini-3.5-flash-lite`, which Google's model list shows as stable,
+  fast and low cost. Model names change often (older 2.5 models are being retired), so if the live check reports
+  `NotFoundError`, set `COACH_LLM_MODEL` to a current id from Google's model list.
+* **Anthropic** (`COACH_LLM_PROVIDER=anthropic`): key `ANTHROPIC_API_KEY`, default `claude-opus-5-5`.
+
+The guardrails and fallbacks are identical for both (they live in `CoachAgent`, not the vendor adapters). Models that
+think before answering can take a few seconds, which is why a cue can arrive a moment after its `rep_completed`, and why
+there is a timeout with a rule fallback. You can set `COACH_LLM_MODEL` to a cheaper or faster model if latency or cost
+matters (your call).
 
 The recap endpoint is `GET /api/workouts/{id}/coach-summary` (see `event-contracts.md`).
 
 ## Not enabled on purpose
 
-* **Server-side refusal fallbacks** (Anthropic's `fallbacks` option, which re-runs a declined request on another model)
-  are not used. This layer already has its own fallback for a refusal: the deterministic rule message, with no second
+* **Vendor-side refusal fallbacks** (Anthropic's server-side `fallbacks` option, which re-runs a declined request on
+  another model) are not used. This layer already has its own fallback for a refusal: the deterministic rule message, with no second
   model call and no surprise cost. Tell me if you want the extra model hop as well.
+* **Gemini's newer "Interactions" API** is not used. The adapter uses the SDK's established `generate_content` call (still
+  shipped in `google-genai`), because its request shape could be verified offline. Google's current docs lead with the
+  Interactions API; switching later means changing only `GeminiProvider._ask`.
 * **No streaming, no tool loop.** A cue is one short structured answer.
 
 ## Plugging in a different LLM vendor
 
-Implement `CoachProvider` in `app/services/agent.py` (`decide`, `summarize`, `aclose`: each takes the same context
-dict and returns the same validated `AgentOutput` / text) and add it to `agent_from_env()`. Every guardrail, the
+Subclass `_StructuredProvider` in `app/services/agent.py` and implement one method, `_ask(system, schema, payload)`, which
+calls the vendor and returns the parsed JSON object (see `GeminiProvider`, ~50 lines), then add it to `agent_from_env()`. Every guardrail, the
 fallback, the timeout and the background delivery are in `CoachAgent` and apply to any provider.
 
 ## Limits

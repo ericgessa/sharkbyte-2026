@@ -232,6 +232,46 @@ The backend dev can also check the server end to end the way the app uses it (re
 simulated squats, clearly synthetic): `python -m scripts.check_remote --base-url <API URL>` from `server/`.
 `python -m scripts.e2e_live` does the same in-process, without a running server.
 
+## 6. MediaPipe pose tracking in the browser (Pose lab)
+
+`mobile/src/pose/` turns camera frames into the `pose_update` messages of section 4, and `/pose` is a developer
+page that wires it all together (camera, skeleton overlay, backend, coaching cues). **Web only for now**; on a
+phone the screen says so (native camera + MediaPipe is not built).
+
+```bash
+cd mobile
+npm ci
+npx expo start --web        # then open http://localhost:8081/pose
+```
+
+What it does: loads MediaPipe's Pose Landmarker **in the browser** (nothing leaves the device), computes joint
+angles from the 3D world landmarks (`angles.ts`: knees, elbows, hips, `null` when a joint is not visible, plus a
+`landmark_confidence`), numbers and rate-limits the frames to 30/s (`protocol.ts`), and streams them over the
+authenticated WebSocket (`workout-client.ts`). Paste a Supabase **access token** (section 2) and the API URL into
+the lab, then *Start workout*. The same code is reusable in the real screens; the lab is just the harness.
+
+Things to know:
+
+- **Needs internet.** The library (`cdn.jsdelivr.net`), the WebAssembly runtime and the ~6 MB model
+  (`storage.googleapis.com`) are fetched by the browser at runtime. They are not bundled because Metro cannot
+  bundle `@mediapipe/tasks-vision` (it contains `import(<expression>)`); the npm package is only used for types.
+  The version is pinned in `package.json` and in `mediapipe.web.ts` (a test checks they agree).
+- **Camera needs a secure context:** `http://localhost` or `https://`. Opening the dev server by LAN IP over plain
+  `http://` will not get camera access; use localhost or an HTTPS tunnel.
+- **No camera?** *Simulate 5 squats* streams synthetic angles through the same path, and *Detect pose in image*
+  runs the real model on a still image (the host must allow CORS, e.g. `upload.wikimedia.org`).
+- **Route registration:** with `expo-router/ui` Tabs, a route only works if it has a `TabTrigger`. `/pose` has a
+  hidden one in `src/components/app-tabs.web.tsx` (no visible tab). Without it the router bounces `/pose` to `/`.
+  Any new non-tab page on web needs the same.
+- Don't start the dev server with `CI=1`: that disables file watching, so edits are silently not served.
+- Tests: `npm run test:pose` (27 pure-logic tests, no browser). The backend suite also runs the TypeScript
+  (`server/tests/test_frontend_contract.py`) and checks that what it produces is accepted by the real server.
+
+Verified so far: model loads in a browser (GPU delegate), real inference on a still image returns angles, and the
+simulated stream through the lab reaches the live backend (5 reps counted, the depth cue comes back). **Not
+verified:** a live camera with a person moving, accuracy of the angles against real squats, mobile devices,
+frame-rate on slower machines.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

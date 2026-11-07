@@ -13,7 +13,7 @@ Division of labour (AGENTS.md: the LLM never counts reps, never invents issues, 
   * Prompt injection surface: the model only ever sees server-computed numbers and fixed strings. No text typed by
     the user or sent by the client reaches the prompt.
 
-Disabled unless COACH_LLM_PROVIDER=anthropic. Provider is pluggable (see ``CoachProvider``).
+Disabled unless COACH_LLM_PROVIDER is set (gemini or anthropic). Providers are pluggable (see ``CoachProvider``).
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ MAX_CUE_CHARS = 200
 MAX_SUMMARY_CHARS = 700
 MIN_REPS_FOR_REST = 5
 DEFAULT_MODEL = "claude-opus-5-5"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"  # stable, fast, low cost per Google's model list; override with COACH_LLM_MODEL
 
 # Words an LLM must not put in front of a user in this product: no medical advice or claims (AGENTS.md).
 _BANNED = re.compile(
@@ -50,7 +51,7 @@ _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _URL = re.compile(r"https?://|www\.", re.I)
 
 # Fallback reasons that mean a human must fix configuration (as opposed to a one-off slow or odd reply).
-MISCONFIGURED = {"no_credentials", "AuthenticationError", "PermissionDeniedError", "NotFoundError"}
+MISCONFIGURED = {"no_credentials", "AuthenticationError", "PermissionDeniedError", "NotFoundError"}  # either vendor
 
 ISSUE_MEANINGS = {
     "reduced_depth": "The user's last two reps were clearly shallower than their own first three reps.",
@@ -246,7 +247,7 @@ class CoachAgent:
         if reason in MISCONFIGURED and not self._warned:
             self._warned = True  # once, loudly: this needs a human, and every user is getting rule messages meanwhile
             logger.warning(
-                "coach LLM is misconfigured (%s): check ANTHROPIC_API_KEY and COACH_LLM_MODEL. "
+                "coach LLM is misconfigured (%s): check the API key (GEMINI_API_KEY or ANTHROPIC_API_KEY) and COACH_LLM_MODEL. "
                 "Users are getting the rule-based messages instead.", reason
             )
         else:
@@ -303,10 +304,47 @@ class CoachAgent:
         return text.strip(), "agent"
 
 
-# ------------------------------------------------------------------ the Anthropic provider
+# ------------------------------------------------------------------ providers (vendor adapters)
 
 
-class AnthropicProvider:
+class _StructuredProvider:
+    """Shared by every vendor adapter: a vendor only implements ``_ask`` (call the API with a system prompt, a JSON
+    schema and a payload, return the parsed JSON object). Validation of the shape happens here, once."""
+
+    async def _ask(self, system: str, schema: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def decide(self, context: dict[str, Any]) -> AgentOutput:
+        data = await self._ask(CUE_SYSTEM, CUE_SCHEMA, context)
+        try:
+            return AgentOutput.model_validate(data)
+        except ValidationError:
+            raise AgentError("schema_violation") from None
+
+    async def summarize(self, context: dict[str, Any]) -> str:
+        data = await self._ask(SUMMARY_SYSTEM, SUMMARY_SCHEMA, context)
+        text = data.get("summary")
+        if not isinstance(text, str):
+            raise AgentError("schema_violation")
+        return text
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _parse_json_object(text: str | None) -> dict[str, Any]:
+    if not text:
+        raise AgentError("no_text")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise AgentError("invalid_json") from None
+    if not isinstance(data, dict):
+        raise AgentError("invalid_json")
+    return data
+
+
+class AnthropicProvider(_StructuredProvider):
     """Claude via the official SDK, using schema-constrained JSON output (no forced tool use: not supported on
     current Opus models). Thinking stays at its default; effort is set low because a coaching cue is short and
     latency matters. Not retried: on failure the caller falls back to the rule message immediately."""
@@ -342,49 +380,105 @@ class AnthropicProvider:
         text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), None)
         if text is None:
             raise AgentError("no_text_block")
-        try:
-            data = json.loads(text)
-        except ValueError:
-            raise AgentError("invalid_json") from None
-        if not isinstance(data, dict):
-            raise AgentError("invalid_json")
-        return data
-
-    async def decide(self, context: dict[str, Any]) -> AgentOutput:
-        data = await self._ask(CUE_SYSTEM, CUE_SCHEMA, context)
-        try:
-            return AgentOutput.model_validate(data)
-        except ValidationError:
-            raise AgentError("schema_violation") from None
-
-    async def summarize(self, context: dict[str, Any]) -> str:
-        data = await self._ask(SUMMARY_SYSTEM, SUMMARY_SCHEMA, context)
-        text = data.get("summary")
-        if not isinstance(text, str):
-            raise AgentError("schema_violation")
-        return text
+        return _parse_json_object(text)
 
     async def aclose(self) -> None:
         if self._client is not None:
             await self._client.close()
 
 
-def agent_from_env() -> CoachAgent:
-    """The coach agent configured by environment variables. Disabled (rules only) unless COACH_LLM_PROVIDER=anthropic.
+class GeminiProvider(_StructuredProvider):
+    """Google Gemini via the official ``google-genai`` SDK (classic ``generate_content``), with schema-constrained
+    JSON output. One attempt only (the SDK's own retries are switched off): a failure falls back to the rule message
+    immediately. The API key is read by the SDK from GEMINI_API_KEY (or GOOGLE_API_KEY) and sent in a header."""
 
-    COACH_LLM_MODEL (default claude-opus-5-5), COACH_LLM_TIMEOUT_S (default 6). The API key is read by the
-    Anthropic SDK itself (ANTHROPIC_API_KEY, or a logged-in `ant` profile); it is never logged or stored here.
+    def __init__(self, model: str = DEFAULT_GEMINI_MODEL, max_tokens: int = 2000, timeout_s: float = 6.0, client: Any = None) -> None:
+        # max_tokens is generous because a model that "thinks" counts those tokens against the limit too.
+        self._model, self._max_tokens, self._timeout_s = model, max_tokens, timeout_s
+        self._client = client
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            from google import genai  # imported lazily: the app runs without the SDK or a key when the coach LLM is off
+            from google.genai import types
+
+            try:
+                self._client = genai.Client(
+                    http_options=types.HttpOptions(
+                        timeout=int(self._timeout_s * 2 * 1000),  # milliseconds
+                        retry_options=types.HttpRetryOptions(attempts=1),  # 1 = no retries
+                    )
+                )
+            except ValueError:
+                raise AgentError("no_credentials") from None  # "No API key was provided"
+        return self._client
+
+    async def _ask(self, system: str, schema: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        from google.genai import errors, types
+
+        client = self._get_client()
+        try:
+            resp = await client.aio.models.generate_content(
+                model=self._model,
+                contents=json.dumps(payload, sort_keys=True),
+                config=types.GenerateContentConfig(
+                    system_instruction=system,
+                    response_mime_type="application/json",
+                    response_json_schema=schema,
+                    max_output_tokens=self._max_tokens,
+                ),
+            )
+        except errors.ClientError as exc:
+            # Name the failures an operator must act on; everything else keeps its class name (ClientError/ServerError).
+            code = getattr(exc, "code", None)
+            if code in (401, 403) or "api key" in str(exc).lower():
+                raise AgentError("AuthenticationError") from None
+            if code == 404:
+                raise AgentError("NotFoundError") from None
+            if code == 429:
+                raise AgentError("rate_limited") from None
+            raise
+
+        feedback = getattr(resp, "prompt_feedback", None)
+        if feedback is not None and getattr(feedback, "block_reason", None):
+            raise AgentError("blocked")
+        candidates = getattr(resp, "candidates", None) or []
+        if not candidates:
+            raise AgentError("no_candidates")
+        finish = getattr(candidates[0], "finish_reason", None)
+        finish_name = getattr(finish, "name", str(finish)) if finish is not None else "STOP"
+        if finish_name not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
+            raise AgentError(f"finish_{finish_name.lower()}")  # MAX_TOKENS (truncated JSON), SAFETY, ...
+        return _parse_json_object(resp.text)
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aio.aclose()
+
+
+PROVIDERS = {"anthropic": "claude-opus-5-5", "gemini": DEFAULT_GEMINI_MODEL, "google": DEFAULT_GEMINI_MODEL}
+
+
+def agent_from_env() -> CoachAgent:
+    """The coach agent configured by environment variables. Disabled (rules only) unless COACH_LLM_PROVIDER is
+    ``gemini`` (alias ``google``) or ``anthropic``.
+
+    COACH_LLM_MODEL (default per provider), COACH_LLM_TIMEOUT_S (default 6). The API key is read by the vendor SDK
+    itself (GEMINI_API_KEY / GOOGLE_API_KEY, or ANTHROPIC_API_KEY); it is never logged or stored here.
     """
     name = os.environ.get("COACH_LLM_PROVIDER", "").strip().lower()
     if not name:
         return CoachAgent(None)
-    if name != "anthropic":
-        logger.warning("COACH_LLM_PROVIDER=%r is not supported; the coach will use rules only", name)
+    if name not in PROVIDERS:
+        logger.warning("COACH_LLM_PROVIDER=%r is not supported (use gemini or anthropic); the coach will use rules only", name)
         return CoachAgent(None)
     try:
         timeout = float(os.environ.get("COACH_LLM_TIMEOUT_S", "6"))
     except ValueError:
         timeout = 6.0
-    model = os.environ.get("COACH_LLM_MODEL", "").strip() or DEFAULT_MODEL
-    logger.info("coach LLM enabled: provider=anthropic model=%s timeout=%.0fs (rules remain the fallback)", model, timeout)
-    return CoachAgent(AnthropicProvider(model=model, timeout_s=timeout), timeout_s=timeout)
+    model = os.environ.get("COACH_LLM_MODEL", "").strip() or PROVIDERS[name]
+    provider: CoachProvider = (
+        AnthropicProvider(model=model, timeout_s=timeout) if name == "anthropic" else GeminiProvider(model=model, timeout_s=timeout)
+    )
+    logger.info("coach LLM enabled: provider=%s model=%s timeout=%.0fs (rules remain the fallback)", name, model, timeout)
+    return CoachAgent(provider, timeout_s=timeout)

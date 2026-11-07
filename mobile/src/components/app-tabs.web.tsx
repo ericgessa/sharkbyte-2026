@@ -27,6 +27,10 @@ export default function AppTabs() {
           <TabTrigger name="explore" href="/explore" asChild>
             <TabButton>Explore</TabButton>
           </TabTrigger>
+          {/* Registers /pose (the camera pose lab) as a route without adding a visible tab button. */}
+          <TabTrigger name="pose" href="/pose" asChild>
+            <View style={styles.hiddenTrigger} />
+          </TabTrigger>
         </CustomTabList>
       </TabList>
     </Tabs>
@@ -76,6 +80,9 @@ export function CustomTabList(props: TabListProps) {
 }
 
 const styles = StyleSheet.create({
+  hiddenTrigger: {
+    display: 'none',
+  },
   tabListContainer: {
     position: 'absolute',
     width: '100%',
