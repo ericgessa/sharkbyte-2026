@@ -224,13 +224,13 @@ def test_the_agent_is_off_unless_configured(monkeypatch):
     assert ag.agent_from_env().enabled is False  # removed: the team uses Gemini only
     monkeypatch.setenv("COACH_LLM_PROVIDER", "Gemini")
     a = ag.agent_from_env()
-    assert a.enabled and a._provider._model == ag.DEFAULT_GEMINI_MODEL and a._timeout_s == 6.0
+    assert a.enabled and a._provider._model == "gemini-3.8-flash" and a._timeout_s == 10.0
     monkeypatch.setenv("COACH_LLM_MODEL", "gemini-3.8-flash")
     monkeypatch.setenv("COACH_LLM_TIMEOUT_S", "2.5")
     a = ag.agent_from_env()
     assert a._provider._model == "gemini-3.8-flash" and a._timeout_s == 2.5
     monkeypatch.setenv("COACH_LLM_TIMEOUT_S", "banana")
-    assert ag.agent_from_env()._timeout_s == 6.0
+    assert ag.agent_from_env()._timeout_s == 10.0
 
 
 # ---- in the live workout loop -----------------------------------------------

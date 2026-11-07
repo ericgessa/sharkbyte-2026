@@ -51,7 +51,7 @@ def test_the_request_has_the_shape_the_api_documents():
     prov, calls = gemini_with(ok_handler({"action": "send_feedback", "message": "Keep it steady."}))
     assert run(prov.decide(CTX)) == AgentOutput(action="send_feedback", message="Keep it steady.")
     (c,) = calls
-    assert c["method"] == "POST" and c["url"].split("?")[0].endswith("/models/gemini-3.5-flash-lite:generateContent")
+    assert c["method"] == "POST" and c["url"].split("?")[0].endswith("/models/gemini-3.8-flash:generateContent")
     assert c["headers"].get("x-goog-api-key") == "test-key" and "test-key" not in c["url"]  # key in a header, never the URL
     body = c["body"]
     assert set(body) == {"contents", "systemInstruction", "generationConfig"}
@@ -143,7 +143,7 @@ def test_the_provider_is_chosen_by_the_environment(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("COACH_LLM_PROVIDER", "gemini")
     a = ag.agent_from_env()
-    assert a.enabled and isinstance(a._provider, GeminiProvider) and a._provider._model == "gemini-3.5-flash-lite"
+    assert a.enabled and isinstance(a._provider, GeminiProvider) and a._provider._model == "gemini-3.8-flash"
     monkeypatch.setenv("COACH_LLM_PROVIDER", "Google")  # alias, any case
     assert isinstance(ag.agent_from_env()._provider, GeminiProvider)
     monkeypatch.setenv("COACH_LLM_MODEL", "gemini-3.1-flash-lite")

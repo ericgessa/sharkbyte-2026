@@ -50,7 +50,8 @@ DEBUG_MAX_CHARS = 800  # COACH_LLM_DEBUG=1 logs each request and reply, cut at t
 # The SDK sends its HTTP timeout to Google as a server deadline, and Gemini rejects deadlines under 10 s with
 # 400 INVALID_ARGUMENT (seen on a live call). The agent's own, shorter timeout still decides when to fall back.
 MIN_GEMINI_DEADLINE_MS = 10_000
-DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"  # stable, fast, low cost per Google's model list; override with COACH_LLM_MODEL
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"  # team choice; 3.8-5.3 s per cue live (3.5-flash-lite: 0.7-2.1 s). COACH_LLM_MODEL overrides
+DEFAULT_TIMEOUT_S = 10.0  # how long a cue or recap waits for the model before the rule text is used
 
 # Words an LLM must not put in front of a user in this product: no medical advice or claims (AGENTS.md).
 _BANNED = re.compile(
@@ -279,7 +280,7 @@ def _pain_reported(context: dict[str, Any]) -> bool:
 
 
 class CoachAgent:
-    def __init__(self, provider: CoachProvider | None, timeout_s: float = 6.0, max_concurrent: int = 4) -> None:
+    def __init__(self, provider: CoachProvider | None, timeout_s: float = DEFAULT_TIMEOUT_S, max_concurrent: int = 4) -> None:
         self._provider = provider
         self._timeout_s = timeout_s
         self._sem = asyncio.Semaphore(max_concurrent)
@@ -403,7 +404,7 @@ class GeminiProvider(_StructuredProvider):
     JSON output. One attempt only (the SDK's own retries are switched off): a failure falls back to the rule message
     immediately. The API key is read by the SDK from GEMINI_API_KEY (or GOOGLE_API_KEY) and sent in a header."""
 
-    def __init__(self, model: str = DEFAULT_GEMINI_MODEL, max_tokens: int = 2000, timeout_s: float = 6.0, client: Any = None) -> None:
+    def __init__(self, model: str = DEFAULT_GEMINI_MODEL, max_tokens: int = 2000, timeout_s: float = DEFAULT_TIMEOUT_S, client: Any = None) -> None:
         # max_tokens is generous because a model that "thinks" counts those tokens against the limit too.
         self._model, self._max_tokens, self._timeout_s = model, max_tokens, timeout_s
         self._client = client
@@ -488,7 +489,7 @@ def agent_from_env() -> CoachAgent:
     """The coach agent configured by environment variables. Disabled (rules only) unless COACH_LLM_PROVIDER is
     ``gemini`` (alias ``google``).
 
-    COACH_LLM_MODEL (default DEFAULT_GEMINI_MODEL), COACH_LLM_TIMEOUT_S (default 6). The API key is read by the SDK
+    COACH_LLM_MODEL (default DEFAULT_GEMINI_MODEL), COACH_LLM_TIMEOUT_S (default 10). The API key is read by the SDK
     itself (GEMINI_API_KEY or GOOGLE_API_KEY); it is never logged or stored here. COACH_LLM_DEBUG=1 logs every request
     sent to the model and its reply (server-computed numbers only; cut at DEBUG_MAX_CHARS).
     """
@@ -501,9 +502,9 @@ def agent_from_env() -> CoachAgent:
         logger.warning("COACH_LLM_PROVIDER=%r is not supported (use gemini); the coach will use rules only", name)
         return CoachAgent(None)
     try:
-        timeout = float(os.environ.get("COACH_LLM_TIMEOUT_S", "6"))
+        timeout = float(os.environ.get("COACH_LLM_TIMEOUT_S", str(DEFAULT_TIMEOUT_S)))
     except ValueError:
-        timeout = 6.0
+        timeout = DEFAULT_TIMEOUT_S
     model = os.environ.get("COACH_LLM_MODEL", "").strip() or PROVIDERS[name]
     provider: CoachProvider = GeminiProvider(model=model, timeout_s=timeout)
     logger.info("coach LLM enabled: provider=%s model=%s timeout=%.0fs (rules remain the fallback)", name, model, timeout)

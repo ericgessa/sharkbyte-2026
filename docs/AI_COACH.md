@@ -53,15 +53,15 @@ In `server/.env` (backend only; never in the mobile app). Get a Gemini key from 
 COACH_LLM_PROVIDER=gemini
 GEMINI_API_KEY=your-gemini-key
 # optional:
-COACH_LLM_MODEL=gemini-3.5-flash-lite
-COACH_LLM_TIMEOUT_S=6
+COACH_LLM_MODEL=gemini-3.8-flash
+COACH_LLM_TIMEOUT_S=10
 ```
 
 Restart the server, then run `python -m scripts.check_coach_llm`.
 
 * **Gemini** (`COACH_LLM_PROVIDER=gemini`, alias `google`): key `GEMINI_API_KEY` (the SDK also accepts `GOOGLE_API_KEY`; if both
-  are set it prefers `GOOGLE_API_KEY`). Default model `gemini-3.5-flash-lite`, which Google's model list shows as stable,
-  fast and low cost. Model names change often (older 2.5 models are being retired), so if the live check reports
+  are set it prefers `GOOGLE_API_KEY`). Default model `gemini-3.8-flash` (the team's choice, 3.8-5.3 s per cue live), with a 10 s timeout
+  (`COACH_LLM_TIMEOUT_S`; recaps get twice that). `gemini-3.5-flash-lite` answered in 0.7-2.1 s if speed matters more. Model names change often (older 2.5 models are being retired), so if the live check reports
   `NotFoundError`, set `COACH_LLM_MODEL` to a current id from Google's model list.
 
 The guardrails and fallbacks live in `CoachAgent`, not in the vendor adapter. Models that

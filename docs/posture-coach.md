@@ -139,8 +139,8 @@ medical or spine words, links or markup) or the two posture-only ones:
 
 `recommend_rest` is only allowed after 5 reps. A pain report stops posture cues for the rest of the workout.
 
-**Model and timing.** `COACH_LLM_MODEL` (default `gemini-3.5-flash-lite`). The cue waits at most
-`COACH_LLM_TIMEOUT_S` (default 6 s). The SDK's own deadline is never under 10 s, because Gemini rejects shorter
+**Model and timing.** `COACH_LLM_MODEL` (default `gemini-3.8-flash`). The cue waits at most
+`COACH_LLM_TIMEOUT_S` (default 10 s). The SDK's own deadline is never under 10 s, because Gemini rejects shorter
 deadlines with `400 INVALID_ARGUMENT`.
 
 ### Live results (2026-11-07, simulated input, real Gemini calls)
@@ -152,7 +152,7 @@ deadlines with `400 INVALID_ARGUMENT`.
 | `lateral_shift` | Your upper back tilts to the right at the bottom. Keep your weight even. | Your upper back is tilting to the right at the bottom. Focus on keeping your shoulders level as you stand up. |
 | `rounded_standing_posture` | Your upper back is tilted forward while you stand between reps. Try standing tall before the next rep. | Your upper back is tilted forward while standing between reps. Stand tall and upright before your next rep. |
 
-`gemini-3.8-flash` came close to the 6 s timeout, so with it some cues would fall back to the rule message.
+Both fit inside the 10 s default timeout. With `gemini-3.8-flash` a posture cue can reach the app up to about 5 s after the rep.
 
 ## Running it
 
@@ -162,7 +162,7 @@ In `server/.env` (git-ignored, **backend only, never in the mobile app**):
 COACH_LLM_PROVIDER=gemini
 GEMINI_API_KEY=...
 # optional
-COACH_LLM_MODEL=gemini-3.5-flash-lite
+COACH_LLM_MODEL=gemini-3.8-flash
 COACH_LLM_DEBUG=1        # log each request sent to Gemini and its reply (cut at 800 characters; never the key)
 ```
 
