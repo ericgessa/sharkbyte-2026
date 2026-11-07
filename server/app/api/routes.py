@@ -5,11 +5,16 @@ import logging
 from typing import Annotated, Any
 from uuid import UUID
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
 from app.schemas.events import CreateWorkoutRequest, StatsOut, WorkoutOut, WorkoutSummaryOut
 from app.services import persistence
+from app.services.analytics import readings_in_window
+from app.services.coach_context import build_coach_context
 from app.services.summary import compute_stats
+from app.services.timeseries import TigerDataError
 from app.services.session_manager import LiveSession
 
 logger = logging.getLogger(__name__)
@@ -74,6 +79,44 @@ def list_workouts(request: Request, user_id: UserId, limit: Annotated[int, Query
     return [to_out(r, live.get(UUID(str(r["id"])))) for r in rows]
 
 
+@router.get("/api/workouts/{session_id}/analytics")
+def workout_analytics(session_id: UUID, request: Request, user_id: UserId) -> dict[str, Any]:
+    """Compact analytics for one workout: Supabase facts plus Tiger Data time-series summaries.
+
+    ``timeseries.available`` is false (with a reason) when Tiger Data is not configured or unreachable;
+    the Supabase part is always present.
+    """
+    state = request.app.state
+    _owned_session(request, session_id, user_id)
+    return build_coach_context(state.store, state.tiger, session_id)
+
+
+@router.get("/api/workouts/{session_id}/readings")
+def workout_readings(
+    session_id: UUID,
+    request: Request,
+    user_id: UserId,
+    start: datetime,
+    end: datetime,
+    metric: Annotated[list[str] | None, Query(max_length=16)] = None,
+    bucket_seconds: Annotated[float | None, Query(gt=0, le=3600)] = None,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
+) -> dict[str, Any]:
+    """Sensor measurements in [start, end) from Tiger Data. Use ``bucket_seconds`` to downsample in SQL."""
+    state = request.app.state
+    _owned_session(request, session_id, user_id)
+    if not state.tiger.configured:
+        return {"available": False, "reason": "not_configured", "readings": []}
+    start, end = (t if t.tzinfo else t.replace(tzinfo=timezone.utc) for t in (start, end))  # naive = UTC
+    if end <= start:
+        raise HTTPException(422, "end must be after start")
+    try:
+        rows = readings_in_window(state.tiger, session_id, start, end, metric, bucket_seconds, limit)
+    except TigerDataError:
+        return {"available": False, "reason": "unavailable", "readings": []}
+    return {"available": True, "readings": rows}
+
+
 @router.get("/api/workouts/{session_id}/summary", response_model=WorkoutSummaryOut)
 def workout_summary(session_id: UUID, request: Request, user_id: UserId) -> WorkoutSummaryOut:
     """Everything the end-of-workout screen needs: reps, coaching messages, stats.
@@ -122,6 +165,10 @@ async def finish_workout(session_id: UUID, request: Request, user_id: UserId) ->
         if remaining:
             live.finished = False  # let the workout continue; the client can retry finishing
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "could not save all data yet; retry")
+
+    # Best effort: write buffered sensor readings so analytics are complete. Never blocks finishing.
+    ingest = request.app.state.ingest
+    await ingest.flush(timeout_s=5.0 if ingest.stats.healthy else 1.0)  # known outage: don't make the user wait
 
     # The saved repetitions are the source of truth for the total.
     total = await asyncio.to_thread(store.count_repetitions, session_id)

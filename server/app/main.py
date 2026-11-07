@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,9 @@ from fastapi.responses import JSONResponse
 from app.api import routes, websocket
 from app.services.auth import SupabaseAuth
 from app.services.database import DatabaseConfigError, SupabaseStore
+from app.services.ingest import SensorIngestor
 from app.services.session_manager import LiveSessions
+from app.services.timeseries import TigerStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # one INFO line per Supabase call is too noisy
@@ -27,9 +30,26 @@ def _cors_origins() -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()] or ["*"]
 
 
-def create_app(store: Any = None, auth: Any = None) -> FastAPI:
-    """``store`` / ``auth`` can be replaced (tests use in-memory fakes)."""
-    app = FastAPI(title="SharkByte Gym Coach")
+def create_app(store: Any = None, auth: Any = None, timeseries: Any = None, ingest: Any = None) -> FastAPI:
+    """``store`` / ``auth`` / ``timeseries`` / ``ingest`` can be replaced (tests use fakes).
+
+    Tiger Data is optional: with no TIGERDATA_URL the ingestor is a no-op and everything else works.
+    """
+    tiger = timeseries if timeseries is not None else TigerStore()
+    ingestor = ingest if ingest is not None else SensorIngestor(tiger if tiger.configured else None)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        await ingestor.start()  # background batch writer for sensor readings
+        try:
+            yield
+        finally:
+            await ingestor.stop()  # last best-effort flush
+            close = getattr(tiger, "close", None)
+            if close:
+                close()
+
+    app = FastAPI(title="SharkByte Gym Coach", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),
@@ -39,6 +59,8 @@ def create_app(store: Any = None, auth: Any = None) -> FastAPI:
     )
     app.state.store = store or SupabaseStore()
     app.state.auth = auth or SupabaseAuth()
+    app.state.tiger = tiger
+    app.state.ingest = ingestor
     app.state.live = LiveSessions()
 
     @app.exception_handler(DatabaseConfigError)

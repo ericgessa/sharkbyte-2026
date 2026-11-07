@@ -138,6 +138,10 @@ Rules that matter:
 - `landmark_confidence` 0-1; below 0.6 the frame is ignored and you get one `tracking_status: lost`
   (then `recovered`). Use that to show "step back so we can see your legs".
 - Show `coaching_feedback.message` as-is (text and/or speech). It is rate-limited server-side.
+- **ESP32 data:** if the phone talks to the wearable over Bluetooth, forward each sample over this same socket
+  (no separate endpoint or credentials): `ws.send(JSON.stringify({ schema_version: 1, type: 'sensor_update',
+  session_id: sessionId, device_id: 'esp32-01', sequence: n++, timestamp_ms: deviceMillis, data: { flex_raw, imu_pitch_deg } }))`.
+  Use the device's own clock for `timestamp_ms`; the server aligns it. Nothing comes back for these messages.
 - Add **Pause/Resume** and a clearly visible **"I'm in pain / stop"** button. They send a `user_signal`
   (`'pause' | 'resume' | 'pain'`), and the server answers with `session_state`:
   ```ts

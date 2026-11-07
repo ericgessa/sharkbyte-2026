@@ -15,6 +15,8 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 | GET | `/api/workouts?limit=20` | 200 list of your `WorkoutOut`, newest first (`limit` 1-100) |
 | GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
 | GET | `/api/workouts/{session_id}/summary` | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far) |
+| GET | `/api/workouts/{session_id}/analytics` | 200 compact analytics: `supabase` (rep stats, coaching events) + `timeseries` (SQL summaries from Tiger Data, per-rep depth/range trends). `timeseries.available` is `false` with a `reason` (`not_configured` / `unavailable`) when Tiger Data is off or down |
+| GET | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window |
 | POST | `/api/workouts/{session_id}/finish` | 200 `WorkoutOut` (idempotent), 404, or 503 if some reps could not be saved yet (retry) |
 
 `WorkoutOut`: `session_id`, `exercise`, `status` (`active`\|`completed`), `started_at`, `ended_at`
@@ -99,6 +101,30 @@ never stops counting; failed saves are retried when `finish` is called.
 * `landmark_confidence`: 0–1. Below 0.6 the frame is ignored (and tracking is reported as lost).
 * Send knee angles only when the relevant landmarks are actually visible; send `null` otherwise.
 
+### Client → server: `sensor_update` (ESP32 wearable data, relayed over this same socket)
+
+```json
+{
+  "schema_version": 1,
+  "type": "sensor_update",
+  "session_id": "UUID",
+  "device_id": "esp32-01",
+  "sequence": 56,
+  "timestamp_ms": 123456,
+  "data": { "flex_raw": 1780, "imu_pitch_deg": 12.4, "imu_roll_deg": 1.0, "accel_z_g": 0.98 }
+}
+```
+
+`data` fields (all optional, at least one required; units are what the sensor reports, not calibrated angles):
+`flex_raw` (raw ADC counts, ≥ 0), `imu_pitch_deg` / `imu_roll_deg` / `imu_yaw_deg` (-360..360),
+`accel_x_g` / `accel_y_g` / `accel_z_g` (g, -64..64). `device_id`: 1-64 chars of `A-Za-z0-9_.:-`.
+`timestamp_ms` is the **device's own clock** (any origin); the server anchors it to server time on the first
+message from that device. Do not try to match it to the camera's timestamps.
+
+Sensor and camera readings are stored in Tiger Data (see `TIGERDATA_SETUP.md`), not Supabase, and nothing is
+sent back to the client for them. If Tiger Data is not configured the message is still accepted and ignored.
+Ignored while the workout is paused. Invalid messages get an `error` event like any other.
+
 ### Client → server: `user_signal` (the user's own buttons)
 
 ```json
@@ -177,7 +203,7 @@ Clients should treat `issue_code` as an open set and show `message` as-is.
 
 ### Not yet defined
 
-`sensor_update` (ESP32), `set_finished`, and anything pain/"stop" related: see AGENTS.md; add here when built.
+`set_finished` and sensor calibration: see AGENTS.md; add here when built.
 
 ## Simulated data
 

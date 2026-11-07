@@ -82,6 +82,9 @@ def main() -> int:
         with connect(f"{ws_base}/ws/workouts/{sid}", open_timeout=10) as ws:
             ws.send(json.dumps({"schema_version": 1, "type": "auth", "access_token": token}))
             check("WebSocket connects and authenticates", json.loads(ws.recv(timeout=15))["type"] == "session_ready")
+            # An ESP32 reading relayed over the same socket. Accepted silently (an error event would break the counts below).
+            ws.send(json.dumps({"schema_version": 1, "type": "sensor_update", "session_id": sid, "device_id": "esp32-check",
+                                "sequence": 0, "timestamp_ms": 1000, "data": {"flex_raw": 1800.0, "imu_pitch_deg": 10.0}}))
             for msg in squat_messages(sid, reps=REPS, depths=[85, 85, 85, 98, 98]):
                 ws.send(json.dumps(msg))
             events = [json.loads(ws.recv(timeout=15)) for _ in range(REPS + 1)]

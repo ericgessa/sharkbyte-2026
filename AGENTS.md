@@ -44,6 +44,10 @@ server/
   app/services/coaching.py          rule-based coach (LLM coach would sit on top, using it as fallback)
   app/services/auth.py              Supabase token verification
   app/services/persistence.py       retryable database writes
+  app/services/ingest.py            sensor buffer + batch writer to Tiger Data, clock anchoring
+  app/services/timeseries.py        Tiger Data (TimescaleDB) client: the SECOND database
+  app/services/analytics.py         SQL time-series analytics; coach_context.py merges both databases
+  app/schemas/sensors.py            ESP32 sensor_update + stored SensorReading models
   app/services/sensor_fusion.py     planned
   app/services/database.py          Supabase client + session queries (not yet used by the API routes)
   scripts/                          check_db.py, db_example.py
@@ -51,6 +55,7 @@ server/
   .env.example
 firmware/esp32/             planned
 supabase/                   config.toml + migrations (see SUPABASE_SETUP.md)
+tigerdata/migrations/       sensor_readings hypertable (see TIGERDATA_SETUP.md); Tiger Data is optional at runtime
 SUPABASE_SETUP.md
 docs/event-contracts.md
 AGENTS.md
