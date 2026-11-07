@@ -102,6 +102,15 @@ class SquatRepCounter:
     _last_ts: int | None = field(default=None, repr=False)
     _rep: _RepInProgress | None = field(default=None, repr=False)
 
+    def reset_tracking(self) -> None:
+        """Forget any rep in progress and wait for a standing frame (e.g. after a pause).
+
+        Counted reps and the sequence/timestamp ordering are kept.
+        """
+        self._rep = None
+        self.phase = SquatPhase.UNARMED
+        self._last_ts = None  # the pause may have lasted longer than max_gap_ms
+
     def update(self, sample: PoseSample) -> StepResult:
         cfg = self.config
 

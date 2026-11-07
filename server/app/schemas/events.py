@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 SCHEMA_VERSION = 1
 
@@ -47,8 +47,18 @@ class AuthMessage(_Strict):
     access_token: str = Field(min_length=1, max_length=8192)
 
 
-# Phase 4: add SensorUpdate and turn this into a union discriminated on "type".
-IncomingEvent = PoseUpdate
+class UserSignal(_Strict):
+    """Something the user did in the app (not a measurement)."""
+
+    schema_version: Literal[1]
+    type: Literal["user_signal"]
+    session_id: UUID
+    signal: Literal["pain", "pause", "resume"]
+
+
+# Phase 4: add SensorUpdate to this union.
+IncomingEvent = Annotated[Union[PoseUpdate, UserSignal], Field(discriminator="type")]
+incoming_adapter: TypeAdapter[PoseUpdate | UserSignal] = TypeAdapter(IncomingEvent)
 
 
 # ------------------------------------------------------------------ outgoing
@@ -59,6 +69,18 @@ class SessionReady(_Strict):
     type: Literal["session_ready"] = "session_ready"
     session_id: UUID
     rep_count: int
+    paused: bool = False
+    coaching_enabled: bool = True  # False once the user has reported pain in this session
+
+
+class SessionState(_Strict):
+    """Sent after every user_signal so the UI can show the current state."""
+
+    schema_version: Literal[1] = SCHEMA_VERSION
+    type: Literal["session_state"] = "session_state"
+    session_id: UUID
+    paused: bool
+    coaching_enabled: bool
 
 
 class RepMetricsOut(_Strict):

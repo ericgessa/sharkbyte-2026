@@ -364,3 +364,80 @@ def test_low_confidence_emits_tracking_events_once(client):
             ws.send_text(json.dumps(m))
         assert ws.receive_json()["tracking"] == "lost"
         assert ws.receive_json()["tracking"] == "recovered"
+
+
+# ------------------------------------------------------------------ user signals: pain / pause / resume
+
+
+def signal(ws, sid, name):
+    ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": sid, "signal": name}))
+
+
+def test_pain_stops_technique_coaching_and_recommends_rest(client, store):
+    sid = new_session(client)
+    with client.websocket_connect(f"/ws/workouts/{sid}") as ws:
+        authed(ws)
+        signal(ws, sid, "pain")
+        fb, state = ws.receive_json(), ws.receive_json()
+        assert fb["type"] == "coaching_feedback" and fb["issue_code"] == "pain_reported"
+        assert "stop" in fb["message"].lower() and "health professional" in fb["message"].lower()
+        assert state == {**state, "type": "session_state", "coaching_enabled": False, "paused": False}
+
+        # The shallowing workout would normally trigger a depth message. Now: reps only.
+        for msg in squat_messages(sid, reps=5, depths=SHALLOWING):
+            ws.send_text(json.dumps(msg))
+        assert [ws.receive_json()["type"] for _ in range(5)] == ["rep_completed"] * 5
+
+        signal(ws, sid, "pain")  # pressing again re-shows the message but must not duplicate the record
+        assert ws.receive_json()["issue_code"] == "pain_reported"
+        assert ws.receive_json()["type"] == "session_state"
+
+    assert client.post(f"/api/workouts/{sid}/finish", headers=ALICE).status_code == 200
+    saved = list(store.events[sid].values())
+    assert [e["issue_code"] for e in saved] == ["pain_reported"]  # no depth message, one pain record
+    assert saved[0]["action"] == "recommend_rest" and saved[0]["rep_number"] is None
+
+
+def test_pain_report_survives_a_server_restart(store):
+    sid = None
+    with TestClient(create_app(store=store, auth=FakeAuth())) as first:
+        sid = new_session(first)
+        with first.websocket_connect(f"/ws/workouts/{sid}") as ws:
+            authed(ws)
+            signal(ws, sid, "pain")
+            ws.receive_json(), ws.receive_json()
+            assert wait_for(lambda: len(store.events.get(sid, {})) == 1)
+
+    # "Restart": brand-new app and empty live state, same database.
+    with TestClient(create_app(store=store, auth=FakeAuth())) as second:
+        with second.websocket_connect(f"/ws/workouts/{sid}") as ws:
+            assert authed(ws)["coaching_enabled"] is False
+            for msg in squat_messages(sid, reps=5, depths=SHALLOWING):
+                ws.send_text(json.dumps(msg))
+            assert [ws.receive_json()["type"] for _ in range(5)] == ["rep_completed"] * 5  # still no coaching
+
+
+def test_pause_ignores_measurements_until_resume(client):
+    sid = new_session(client)
+    with client.websocket_connect(f"/ws/workouts/{sid}") as ws:
+        authed(ws)
+        signal(ws, sid, "pause")
+        assert ws.receive_json()["paused"] is True
+        for msg in squat_messages(sid, reps=3):  # would be 3 reps if counted
+            ws.send_text(json.dumps(msg))
+        signal(ws, sid, "resume")
+        assert ws.receive_json()["paused"] is False
+        for msg in squat_messages(sid, reps=1, start_sequence=10_000, start_ts=1_794_100_000_000):
+            ws.send_text(json.dumps(msg))
+        ev = ws.receive_json()
+    assert ev["type"] == "rep_completed" and ev["rep_count"] == 1  # the paused reps never counted
+
+
+def test_unknown_signal_is_rejected_and_other_sessions_signal_is_mismatch(client):
+    sid = new_session(client)
+    with client.websocket_connect(f"/ws/workouts/{sid}") as ws:
+        authed(ws)
+        signal(ws, sid, "explode")
+        assert ws.receive_json()["code"] == "invalid_message"
+        signal(ws, str(uuid4()), "pain")
+        assert ws.receive_json()["code"] == "session_mismatch"

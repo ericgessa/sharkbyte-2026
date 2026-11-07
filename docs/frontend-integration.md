@@ -138,13 +138,26 @@ Rules that matter:
 - `landmark_confidence` 0-1; below 0.6 the frame is ignored and you get one `tracking_status: lost`
   (then `recovered`). Use that to show "step back so we can see your legs".
 - Show `coaching_feedback.message` as-is (text and/or speech). It is rate-limited server-side.
+- Add **Pause/Resume** and a clearly visible **"I'm in pain / stop"** button. They send a `user_signal`
+  (`'pause' | 'resume' | 'pain'`), and the server answers with `session_state`:
+  ```ts
+  const sendSignal = (signal: 'pause' | 'resume' | 'pain') =>
+    ws.send(JSON.stringify({ schema_version: 1, type: 'user_signal', session_id: sessionId, signal }))
+  ```
+  After `pain` the server stops technique coaching for the whole session (`coaching_enabled: false`). Show
+  the returned message and don't encourage the user to continue.
 - Reconnect is safe: call `openWorkoutSocket` again with the same session id; the rep count continues.
 - Close codes: `4401` bad/expired token (refresh and retry), `4404` unknown/not yours, `4409` session already finished.
 
 ## 5. Testing without the camera
 
-The backend dev can stream simulated squats (clearly synthetic) to check your UI:
-`python -m scripts.e2e_live` (from `server/`) runs the whole flow against Supabase with a throwaway user.
+**Quick reachability test from your phone (30 seconds):** open `<EXPO_PUBLIC_API_URL>/health` in the phone's
+browser. `{"status":"ok"}` means the phone can reach the backend; anything else is a network problem (wrong IP,
+different Wi-Fi, firewall, or Wi-Fi client isolation), not an app bug.
+
+The backend dev can also check the server end to end the way the app uses it (real sign-in, REST, WebSocket,
+simulated squats, clearly synthetic): `python -m scripts.check_remote --base-url <API URL>` from `server/`.
+`python -m scripts.e2e_live` does the same in-process, without a running server.
 
 ## Troubleshooting
 

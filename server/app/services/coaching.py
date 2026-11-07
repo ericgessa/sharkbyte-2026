@@ -54,9 +54,19 @@ class CoachingDecision:
     event_id: UUID = field(default_factory=uuid4)
 
 
+PAIN_ISSUE_CODE = "pain_reported"
+ACTION_RECOMMEND_REST = "recommend_rest"
+PAIN_MESSAGE = (
+    "Stop the exercise now. If the pain continues or worries you, "
+    "please talk to a qualified health professional before exercising again."
+)
+
+
 class RuleCoach:
     def __init__(self, config: CoachConfig | None = None) -> None:
         self.config = config or CoachConfig()
+        # False after the user reports pain: no more technique coaching this session.
+        self.enabled = True
         self.reps: list[RepMetrics] = []
         self.messages_sent = 0
         self._last_message_rep: int | None = None
@@ -65,6 +75,8 @@ class RuleCoach:
     def observe(self, rep: RepMetrics) -> CoachingDecision | None:
         """Record a completed rep; return feedback to give now, or None."""
         self.reps.append(rep)
+        if not self.enabled:
+            return None
         for issue in self._detected_issues():  # priority order
             if self._allowed(issue, rep.rep_number):
                 self.messages_sent += 1

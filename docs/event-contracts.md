@@ -99,6 +99,25 @@ never stops counting; failed saves are retried when `finish` is called.
 * `landmark_confidence`: 0–1. Below 0.6 the frame is ignored (and tracking is reported as lost).
 * Send knee angles only when the relevant landmarks are actually visible; send `null` otherwise.
 
+### Client → server: `user_signal` (the user's own buttons)
+
+```json
+{ "schema_version": 1, "type": "user_signal", "session_id": "UUID", "signal": "pain" }
+```
+
+`signal` is one of:
+
+* `pause`: the server ignores `pose_update`s until `resume`. Use for rests or when the user steps away.
+* `resume`: continue. The rep counter forgets any half-finished movement and waits for the user to stand up,
+  so resuming mid-squat never counts a bogus rep.
+* `pain`: the user reports pain or discomfort. The server immediately sends a `coaching_feedback`
+  (`issue_code: "pain_reported"`) telling them to stop and to talk to a qualified health professional, turns
+  **technique coaching off for the rest of the session** (counting continues), and saves a `coaching_events`
+  row (`action: "recommend_rest"`). The "off" state is remembered across server restarts and reconnects.
+  The app should make this button easy to reach and should stop prompting the user to continue.
+
+Every signal is answered with a `session_state` message (below).
+
 ### Server → client
 
 `rep_completed` — one per counted rep:
@@ -144,6 +163,11 @@ until 3 reps exist, at least 2 reps between messages, 4 reps before repeating an
 session. Messages describe measurements only; they never give medical advice. The thresholds are
 untuned starting values (`CoachConfig` in `server/app/services/coaching.py`).
 Clients should treat `issue_code` as an open set and show `message` as-is.
+
+`session_state` — the reply to every `user_signal`:
+`{"type":"session_state","session_id":"UUID","paused":false,"coaching_enabled":true}`
+(`coaching_enabled` is `false` after a pain report). `session_ready` carries the same two fields
+(`paused`, `coaching_enabled`) so a reconnecting app can restore its UI.
 
 `tracking_status` — sent only on change:
 `{"type":"tracking_status","session_id":"UUID","tracking":"lost"|"recovered", ...}`
