@@ -82,3 +82,10 @@ def test_decision_content_is_descriptive_and_idempotent_id():
     assert d.event_id  # generated once per decision so a retried save is an upsert
     for word in ("injur", "dangerous", "unsafe", "pain", "diagnos"):
         assert word not in d.message.lower()
+
+
+def test_disabled_coach_stays_silent_but_still_records_reps():
+    c = RuleCoach()
+    c.enabled = False
+    assert run(c, [rep(1), rep(2), rep(3), rep(4, 98), rep(5, 98)]) == {}
+    assert len(c.reps) == 5

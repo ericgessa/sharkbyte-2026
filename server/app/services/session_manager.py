@@ -28,6 +28,8 @@ class LiveSession:
     # Background saves in flight; finishing waits for these so no rep is missed.
     save_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     finished: bool = False
+    paused: bool = False  # frames are ignored while paused
+    pain_reported: bool = False
 
 
 class LiveSessions:

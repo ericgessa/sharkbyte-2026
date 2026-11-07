@@ -94,6 +94,30 @@ def main() -> int:
                 listed.status_code == 200 and [w["session_id"] for w in listed.json()] == [sid]
                 and listed.json()[0]["total_reps"] == REPS,
             )
+        # Second workout: the user reports pain. It must be saved, and survive a server restart.
+        with TestClient(create_app()) as client:
+            sid2 = client.post("/api/workouts", json={"exercise": "squat"}, headers=headers).json()["session_id"]
+            with client.websocket_connect(f"/ws/workouts/{sid2}") as ws:
+                ws.send_text(json.dumps({"schema_version": 1, "type": "auth", "access_token": token}))
+                ws.receive_json()
+                ws.send_text(json.dumps({"schema_version": 1, "type": "user_signal", "session_id": sid2, "signal": "pain"}))
+                fb, state = ws.receive_json(), ws.receive_json()
+            check("pain: stop message sent and coaching disabled", fb.get("issue_code") == "pain_reported" and state.get("coaching_enabled") is False)
+            for _ in range(40):  # background save: wait until the row is visible
+                pain_rows = admin.table("coaching_events").select("issue_code,action,rep_number").eq("session_id", sid2).execute().data
+                if pain_rows:
+                    break
+                time.sleep(0.25)
+            check(
+                "pain: event saved in Supabase (recommend_rest)",
+                len(pain_rows) == 1 and pain_rows[0]["issue_code"] == "pain_reported" and pain_rows[0]["action"] == "recommend_rest",
+            )
+        with TestClient(create_app()) as restarted:  # fresh app = empty memory, same database
+            with restarted.websocket_connect(f"/ws/workouts/{sid2}") as ws:
+                ws.send_text(json.dumps({"schema_version": 1, "type": "auth", "access_token": token}))
+                ready = ws.receive_json()
+            check("pain: after a 'server restart' coaching is still disabled", ready.get("coaching_enabled") is False)
+            restarted.post(f"/api/workouts/{sid2}/finish", headers=headers)
 
         # Read back straight from Postgres, bypassing our API.
         reps = admin.table("repetitions").select("rep_number, metrics").eq("session_id", sid).order("rep_number").execute().data

@@ -136,3 +136,18 @@ def test_bounce_at_bottom_is_one_rep():
         r.rep for i, a in enumerate(angles) if (r := c.update(sample(i, i * 250, a))).rep
     ]
     assert len(reps) == 1
+
+
+def test_reset_tracking_discards_partial_rep_and_requires_standing_again():
+    c = SquatRepCounter()
+    for i, a in enumerate([170, 140, 100]):
+        c.update(sample(i, i * 300, a))
+    assert c.phase is SquatPhase.BOTTOM
+    c.reset_tracking()  # e.g. user paused mid-squat
+    assert c.phase is SquatPhase.UNARMED and c.rep_count == 0
+    # Resuming mid-movement must not produce a rep...
+    for i, a in enumerate([100, 120, 150, 168], start=3):
+        assert c.update(sample(i, 100_000 + i * 300, a)).rep is None
+    # ...but the next full squat counts normally.
+    reps, _ = feed(c, squat_messages(uuid4(), reps=1, start_sequence=50, start_ts=200_000))
+    assert len(reps) == 1 and c.rep_count == 1

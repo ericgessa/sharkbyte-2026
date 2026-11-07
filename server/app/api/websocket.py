@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
@@ -11,12 +11,15 @@ from app.schemas.events import (
     AuthMessage,
     CoachingFeedback,
     ErrorEvent,
-    PoseUpdate,
     RepCompleted,
     RepMetricsOut,
     SessionReady,
+    SessionState,
     TrackingStatus,
+    UserSignal,
+    incoming_adapter,
 )
+from app.services.coaching import ACTION_RECOMMEND_REST, PAIN_ISSUE_CODE, PAIN_MESSAGE
 from app.services import persistence
 from app.services.persistence import Write
 from app.services.rep_counter import PoseSample, RepMetrics
@@ -93,7 +96,44 @@ async def _authenticate(ws: WebSocket, session_id: UUID) -> LiveSession | None:
     if live is None:
         saved = await asyncio.to_thread(store.count_repetitions, session_id)
         live = ws.app.state.live.get_or_create(session_id, user_id, saved_reps=saved)
+        # A pain report must survive a server restart: if one was saved, stay in "no coaching" mode.
+        events = await asyncio.to_thread(store.list_coaching_events, session_id)
+        if any(e.get("issue_code") == PAIN_ISSUE_CODE for e in events):
+            live.pain_reported, live.coach.enabled = True, False
     return live
+
+
+async def _handle_signal(ws: WebSocket, live: LiveSession, signal: str) -> None:
+    """pause / resume / pain from the user's own buttons."""
+    if signal == "pause":
+        live.paused = True
+    elif signal == "resume":
+        if live.paused:
+            live.counter.reset_tracking()  # don't count from the middle of a movement
+        live.paused = False
+    elif signal == "pain":
+        first_time = not live.pain_reported
+        live.pain_reported = True
+        live.coach.enabled = False  # no more technique coaching this session
+        reps = live.counter.rep_count
+        await _send(
+            ws,
+            CoachingFeedback(session_id=live.session_id, rep_count=reps, issue_code=PAIN_ISSUE_CODE, message=PAIN_MESSAGE),
+        )
+        if first_time:  # saved once, even if the user taps the button again
+            _persist(
+                ws,
+                live,
+                (
+                    persistence.COACHING_EVENT,
+                    (live.session_id, uuid4(), reps or None, PAIN_ISSUE_CODE, PAIN_MESSAGE, ACTION_RECOMMEND_REST),
+                ),
+            )
+    logger.info("user signal %s session=%s", signal, live.session_id)
+    await _send(
+        ws,
+        SessionState(session_id=live.session_id, paused=live.paused, coaching_enabled=not live.pain_reported),
+    )
 
 
 @router.websocket("/ws/workouts/{session_id}")
@@ -105,7 +145,15 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
             return
         counter = live.counter
         logger.info("ws authenticated session=%s", session_id)
-        await _send(ws, SessionReady(session_id=session_id, rep_count=counter.rep_count))
+        await _send(
+            ws,
+            SessionReady(
+                session_id=session_id,
+                rep_count=counter.rep_count,
+                paused=live.paused,
+                coaching_enabled=not live.pain_reported,
+            ),
+        )
 
         while True:
             raw = await ws.receive_text()
@@ -113,7 +161,7 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                 await ws.close(code=CLOSE_NOT_ACTIVE)
                 return
             try:
-                event = PoseUpdate.model_validate_json(raw)
+                event = incoming_adapter.validate_json(raw)
             except ValidationError as exc:
                 # Don't echo user input back; just say which fields were wrong.
                 fields = ",".join(".".join(map(str, e["loc"])) for e in exc.errors())
@@ -124,6 +172,12 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
             if event.session_id != session_id:
                 await _send(ws, ErrorEvent(code="session_mismatch", detail="session_id does not match socket"))
                 continue
+
+            if isinstance(event, UserSignal):
+                await _handle_signal(ws, live, event.signal)
+                continue
+            if live.paused:
+                continue  # the user paused: ignore measurements until they resume
 
             d = event.data
             result = counter.update(
