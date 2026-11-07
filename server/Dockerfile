@@ -1,7 +1,7 @@
 # SharkByte API. Build from the server/ directory:
 #   docker build -t sharkbyte-server server/
 #   docker run --rm --env-file server/.env -p 8000:8000 sharkbyte-server
-# NOT BUILT OR RUN YET: Docker was unavailable when this was written. See docs/DEPLOYMENT.md.
+# Built and run locally once (2026-11-07): see the status section of docs/DEPLOYMENT.md for exactly what was checked.
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

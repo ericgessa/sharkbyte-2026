@@ -236,6 +236,8 @@ Every signal is answered with a `session_state` message (below).
 `max_asymmetry_deg` is `null` if both knees were never visible in the same frame.
 `duration_ms` runs from leaving standing (< 150°) to returning to standing (≥ 160°).
 
+**Personal standing angle.** Those 150°/160° are the defaults. If someone's knees read lower than 160° when they stand (camera angle, slightly bent knees) and hold still for about a third of a second, the server lowers the standing threshold to just under their resting angle (never below 145°, never above 160°) and keeps the same 10° gap, so their reps are counted instead of silently ignored. Depth (≤ 110°) is not adapted. Checked on synthetic noisy data only (all 360 noisy runs counted exactly; fidgeting produced no false reps); not checked on real camera data.
+
 `coaching_feedback` — sent right after the `rep_completed` that triggered it, and saved to
 `coaching_events`:
 
