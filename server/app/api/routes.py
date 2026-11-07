@@ -5,10 +5,11 @@ import logging
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
-from app.schemas.events import CreateWorkoutRequest, WorkoutOut
+from app.schemas.events import CreateWorkoutRequest, StatsOut, WorkoutOut, WorkoutSummaryOut
 from app.services import persistence
+from app.services.summary import compute_stats
 from app.services.session_manager import LiveSession
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,32 @@ def create_workout(body: CreateWorkoutRequest, request: Request, user_id: UserId
     row = request.app.state.store.create_session(user_id, body.exercise)
     logger.info("session created id=%s user=%s", row["id"], user_id)
     return to_out(row)
+
+
+@router.get("/api/workouts", response_model=list[WorkoutOut])
+def list_workouts(request: Request, user_id: UserId, limit: Annotated[int, Query(ge=1, le=100)] = 20) -> list[WorkoutOut]:
+    """The caller's workouts, newest first."""
+    live = request.app.state.live
+    rows = request.app.state.store.list_sessions(user_id, limit)
+    return [to_out(r, live.get(UUID(str(r["id"])))) for r in rows]
+
+
+@router.get("/api/workouts/{session_id}/summary", response_model=WorkoutSummaryOut)
+def workout_summary(session_id: UUID, request: Request, user_id: UserId) -> WorkoutSummaryOut:
+    """Everything the end-of-workout screen needs: reps, coaching messages, stats.
+
+    Works for active sessions too (reps saved so far).
+    """
+    store = request.app.state.store
+    row = _owned_session(request, session_id, user_id)
+    reps = store.list_repetitions(session_id)
+    events = store.list_coaching_events(session_id)
+    return WorkoutSummaryOut(
+        workout=to_out(row, request.app.state.live.get(session_id)),
+        stats=StatsOut(**compute_stats(reps)),
+        reps=reps,
+        coaching_events=events,
+    )
 
 
 @router.get("/api/workouts/{session_id}", response_model=WorkoutOut)

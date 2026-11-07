@@ -80,6 +80,21 @@ def main() -> int:
             check("finish workout (200, completed)", r.status_code == 200 and r.json()["status"] == "completed")
             check(f"API reports total_reps == {REPS}", r.json().get("total_reps") == REPS)
 
+            s = client.get(f"/api/workouts/{sid}/summary", headers=headers)
+            sj = s.json() if s.status_code == 200 else {}
+            check(
+                "summary endpoint: 5 reps, 1 coaching event, depth got shallower",
+                s.status_code == 200 and len(sj["reps"]) == REPS and len(sj["coaching_events"]) == 1
+                and sj["stats"]["depth_change_deg"] is not None and sj["stats"]["depth_change_deg"] > 5,
+            )
+            check("summary shows exercise name from the database join", sj.get("workout", {}).get("exercise") == "squat")
+            listed = client.get("/api/workouts", headers=headers)
+            check(
+                "list endpoint returns this workout",
+                listed.status_code == 200 and [w["session_id"] for w in listed.json()] == [sid]
+                and listed.json()[0]["total_reps"] == REPS,
+            )
+
         # Read back straight from Postgres, bypassing our API.
         reps = admin.table("repetitions").select("rep_number, metrics").eq("session_id", sid).order("rep_number").execute().data
         check(f"{REPS} repetition rows saved in Supabase", [x["rep_number"] for x in reps] == list(range(1, REPS + 1)))

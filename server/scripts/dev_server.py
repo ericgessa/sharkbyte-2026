@@ -1,6 +1,6 @@
 """Run the API so phones, emulators and teammates can reach it, and print the URLs to use.
 
-    python -m scripts.dev_server [--port 8000] [--no-reload]     (run from server/)
+    python -m scripts.dev_server [--port 8000] [--reload]     (run from server/)
 
 Listens on all network interfaces (0.0.0.0). Everything except /health requires a Supabase
 login token, but anyone on your network can reach the port, so use trusted networks.
@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import argparse
 import socket
-
-import uvicorn
+import subprocess
+import sys
 
 
 def lan_ips() -> list[str]:
@@ -34,7 +34,12 @@ def lan_ips() -> list[str]:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--port", type=int, default=8000)
-    p.add_argument("--no-reload", action="store_true")
+    p.add_argument(
+        "--reload",
+        action="store_true",
+        help="auto-restart on code changes. Off by default: with the Windows Store build of Python the old\n"
+        "process keeps serving stale code after a 'reload'. Works fine on macOS/Linux/python.org Python.",
+    )
     args = p.parse_args()
 
     print("\nSharkByte API. Use these as EXPO_PUBLIC_API_URL in mobile/.env:")
@@ -44,13 +49,17 @@ def main() -> None:
     print(f"  iOS simulator / Expo web on this machine: http://localhost:{args.port}")
     print(f"  interactive API docs                    : http://localhost:{args.port}/docs\n")
 
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=args.port,
-        reload=not args.no_reload,
-        reload_dirs=["app"] if not args.no_reload else None,
-    )
+    # Launch uvicorn's own CLI in a child process. Calling uvicorn.run(reload=True) from this
+    # script re-ran it on every reload on Windows and left a stale server serving old code.
+    cmd = [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(args.port)]
+    if args.reload:
+        cmd += ["--reload", "--reload-dir", "app"]
+    else:
+        print("Auto-reload is OFF: restart this script (Ctrl+C, run again) after changing backend code.\n")
+    try:
+        raise SystemExit(subprocess.call(cmd))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

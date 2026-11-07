@@ -184,6 +184,65 @@ def test_outage_queues_reps_and_coaching_events_then_finish_saves_both(client, s
     assert len(store.events[sid]) == 1
 
 
+def test_summary_has_reps_coaching_and_stats(client, store):
+    sid = new_session(client)
+    stream_shallowing(client, sid)
+    client.post(f"/api/workouts/{sid}/finish", headers=ALICE)
+
+    r = client.get(f"/api/workouts/{sid}/summary", headers=ALICE)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["workout"]["status"] == "completed" and body["workout"]["total_reps"] == 5
+    assert [x["rep_number"] for x in body["reps"]] == [1, 2, 3, 4, 5]
+    assert "min_knee_angle_deg" in body["reps"][0]["metrics"]
+    assert [e["issue_code"] for e in body["coaching_events"]] == ["reduced_depth"]
+    stats = body["stats"]
+    assert stats["rep_count"] == 5 and stats["depth_change_deg"] > 5  # later reps shallower
+    assert stats["deepest_knee_angle_deg"] < stats["shallowest_knee_angle_deg"]
+
+
+def test_summary_of_a_workout_with_no_reps_is_valid(client):
+    sid = new_session(client)
+    body = client.get(f"/api/workouts/{sid}/summary", headers=ALICE).json()
+    assert body["reps"] == [] and body["coaching_events"] == []
+    assert body["stats"]["rep_count"] == 0 and body["stats"]["avg_min_knee_angle_deg"] is None
+
+
+def test_summary_is_private_and_authenticated(client):
+    sid = new_session(client)
+    assert client.get(f"/api/workouts/{sid}/summary", headers=BOB).status_code == 404
+    assert client.get(f"/api/workouts/{sid}/summary").status_code == 401
+    assert client.get(f"/api/workouts/{uuid4()}/summary", headers=ALICE).status_code == 404
+
+
+def test_list_workouts_returns_only_my_sessions_newest_first(client):
+    first, second = new_session(client), new_session(client)
+    bobs = new_session(client, BOB)
+    ids = [w["session_id"] for w in client.get("/api/workouts", headers=ALICE).json()]
+    assert ids == [second, first] and bobs not in ids
+    assert [w["session_id"] for w in client.get("/api/workouts", headers=BOB).json()] == [bobs]
+
+
+def test_list_workouts_limit_and_auth(client):
+    for _ in range(3):
+        new_session(client)
+    assert len(client.get("/api/workouts?limit=2", headers=ALICE).json()) == 2
+    assert client.get("/api/workouts?limit=0", headers=ALICE).status_code == 422
+    assert client.get("/api/workouts?limit=101", headers=ALICE).status_code == 422
+    assert client.get("/api/workouts").status_code == 401
+
+
+def test_list_shows_live_rep_count_for_a_streaming_workout(client):
+    sid = new_session(client)
+    with client.websocket_connect(f"/ws/workouts/{sid}") as ws:
+        authed(ws)
+        for msg in squat_messages(sid, reps=2):
+            ws.send_text(json.dumps(msg))
+        [ws.receive_json() for _ in range(2)]
+        listed = client.get("/api/workouts", headers=ALICE).json()
+    assert listed[0]["total_reps"] == 2  # not 0: DB total is only written at finish
+
+
 def test_finish_waits_for_in_flight_saves(client, store):
     """Finishing right after the last rep event must not undercount."""
     sid = new_session(client)

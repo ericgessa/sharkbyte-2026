@@ -89,6 +89,13 @@ const workout = await api<{ session_id: string }>('/api/workouts', { method: 'PO
 const summary = await api(`/api/workouts/${workout.session_id}/finish`, { method: 'POST' })   // { status: 'completed', total_reps, ... }
 ```
 
+Screens you can build from the other read endpoints (response shapes in [event-contracts.md](event-contracts.md)):
+
+```ts
+const history = await api<any[]>('/api/workouts?limit=20')                     // history list, newest first
+const summary = await api<any>(`/api/workouts/${id}/summary`)                  // reps + coaching messages + stats
+```
+
 Status codes: `401` token missing/expired, `404` session not found (or not yours), `503` on finish means
 some data didn't save yet: wait a second and call finish again (safe to repeat).
 

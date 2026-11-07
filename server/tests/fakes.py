@@ -30,6 +30,23 @@ class InMemoryStore:
         row = self.sessions.get(str(session_id))
         return dict(row) if row and row["user_id"] == user_id else None
 
+    def list_sessions(self, user_id: str, limit: int) -> list[dict]:
+        rows = [dict(r) for r in self.sessions.values() if r["user_id"] == user_id]
+        return sorted(rows, key=lambda r: r["started_at"], reverse=True)[:limit]
+
+    def list_repetitions(self, session_id) -> list[dict]:
+        reps = self.reps.get(str(session_id), {})
+        return [
+            {"rep_number": n, "metrics": reps[n], "form_score": None, "created_at": datetime.now(timezone.utc).isoformat()}
+            for n in sorted(reps)
+        ]
+
+    def list_coaching_events(self, session_id) -> list[dict]:
+        return [
+            {**e, "created_at": datetime.now(timezone.utc).isoformat()}
+            for e in self.events.get(str(session_id), {}).values()
+        ]
+
     def save_repetition(self, session_id, rep_number: int, metrics: dict) -> None:
         if self.fail_saves:
             raise RuntimeError("simulated database outage")

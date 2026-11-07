@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -108,6 +108,33 @@ class CreateWorkoutRequest(_Strict):
     exercise: Literal["squat"] = "squat"
 
 
+class RepOut(_Strict):
+    rep_number: int
+    metrics: dict[str, Any]
+    form_score: float | None = None
+    created_at: datetime
+
+
+class CoachingEventOut(_Strict):
+    rep_number: int | None
+    issue_code: str | None
+    message: str
+    action: str | None
+    created_at: datetime
+
+
+class StatsOut(_Strict):
+    """Knee angle: smaller = deeper. depth_change_deg > 0 means later reps were shallower."""
+
+    rep_count: int
+    avg_min_knee_angle_deg: float | None
+    deepest_knee_angle_deg: float | None
+    shallowest_knee_angle_deg: float | None
+    depth_change_deg: float | None
+    avg_rep_duration_ms: int | None
+    max_asymmetry_deg: float | None
+
+
 class WorkoutOut(_Strict):
     session_id: UUID
     exercise: str
@@ -117,3 +144,10 @@ class WorkoutOut(_Strict):
     total_reps: int
     dropped_frames: int = 0  # live counters; 0 when the session is not streaming
     aborted_attempts: int = 0
+
+
+class WorkoutSummaryOut(_Strict):
+    workout: WorkoutOut
+    stats: StatsOut
+    reps: list[RepOut]
+    coaching_events: list[CoachingEventOut]
