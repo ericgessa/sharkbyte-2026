@@ -8,11 +8,11 @@ All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`
 
 ## REST
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| GET | `/health` | `{"status":"ok"}` |
-| POST | `/api/workouts` | body `{"exercise":"squat"}` → 201 `WorkoutOut` |
-| GET | `/api/workouts/{session_id}` | 200 `WorkoutOut` or 404 |
+| Method | Path                         | Notes                                          |
+| ------ | ---------------------------- | ---------------------------------------------- |
+| GET    | `/health`                    | `{"status":"ok"}`                              |
+| POST   | `/api/workouts`              | body `{"exercise":"squat"}` → 201 `WorkoutOut` |
+| GET    | `/api/workouts/{session_id}` | 200 `WorkoutOut` or 404                        |
 
 `WorkoutOut`: `session_id`, `exercise`, `status` (`active`\|`completed`), `started_at`,
 `total_reps`, `dropped_frames`, `aborted_attempts`.
@@ -42,13 +42,13 @@ in the URL decides which session is used; it must equal `session_id` in every me
 }
 ```
 
-* `sequence`: integer ≥ 0, strictly increasing per session. Repeats and lower values are dropped.
-* `timestamp_ms`: integer ≥ 0, client clock (epoch ms or any monotonic origin, but consistent
+- `sequence`: integer ≥ 0, strictly increasing per session. Repeats and lower values are dropped.
+- `timestamp_ms`: integer ≥ 0, client clock (epoch ms or any monotonic origin, but consistent
   within a session). Only differences are used. A decrease drops the frame; a gap over 2 s disarms
   the counter until a standing frame is seen.
-* Knee angles: degrees, 0–180, 180 ≈ straight leg. Either may be `null` but not both.
-* `landmark_confidence`: 0–1. Below 0.6 the frame is ignored (and tracking is reported as lost).
-* Send knee angles only when the relevant landmarks are actually visible; send `null` otherwise.
+- Knee angles: degrees, 0–180, 180 ≈ straight leg. Either may be `null` but not both.
+- `landmark_confidence`: 0–1. Below 0.6 the frame is ignored (and tracking is reported as lost).
+- Send knee angles only when the relevant landmarks are actually visible; send `null` otherwise.
 
 ### Server → client
 
