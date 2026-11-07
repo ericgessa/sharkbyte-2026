@@ -8,7 +8,10 @@
     "scheme": "sharkbyte2026",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "infoPlist": {
+        "NSCameraUsageDescription": "SharkByte uses the camera to track your body position during workouts. Video stays on your device."
+      }
     },
     "android": {
       "adaptiveIcon": {
