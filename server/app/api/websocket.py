@@ -11,15 +11,23 @@ from pydantic import BaseModel, ValidationError
 from app.schemas.events import (
     AuthMessage,
     CoachingFeedback,
+    DeviceCommand,
+    DeviceCommandOut,
     ErrorEvent,
     RepCompleted,
     RepRejected,
     RepMetricsOut,
+    SensorAuth,
+    SensorLink,
+    SensorLive,
+    SensorNote,
+    SensorReady,
     SessionReady,
     SessionState,
     TrackingStatus,
     UserSignal,
     incoming_adapter,
+    sensor_bridge_adapter,
 )
 from app.schemas.sensors import SensorUpdate
 from app.services.coaching import ACTION_RECOMMEND_REST, PAIN_ISSUE_CODE, PAIN_MESSAGE, CoachingDecision
@@ -184,12 +192,17 @@ async def _authenticate(ws: WebSocket, session_id: UUID) -> LiveSession | None:
         await ws.close(code=CLOSE_UNAUTHENTICATED)
         return None
 
-    store, auth = ws.app.state.store, ws.app.state.auth
-    user_id = await asyncio.to_thread(auth.verify, token)
+    user_id = await asyncio.to_thread(ws.app.state.auth.verify, token)
     if user_id is None:
         await ws.close(code=CLOSE_UNAUTHENTICATED)
         return None
+    return await _load_live(ws, session_id, user_id)
 
+
+async def _load_live(ws: WebSocket, session_id: UUID, user_id: str) -> LiveSession | None:
+    """The user's active workout as a live session (created after a server restart). Closes the socket if it is
+    missing, someone else's, or finished."""
+    store = ws.app.state.store
     row = await asyncio.to_thread(store.get_session, session_id, user_id)
     if row is None:
         await ws.close(code=CLOSE_NOT_FOUND)
@@ -345,6 +358,7 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
                 analysis_supported=live.exercise.analysis_supported,
                 paused=live.paused,
                 coaching_enabled=not live.pain_reported,
+                sensor_connected=live.sensor_socket is not None,
             ),
         )
 
@@ -386,6 +400,16 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
 
             if isinstance(event, UserSignal):
                 await _handle_signal(ws, live, event.signal)
+                continue
+            if isinstance(event, DeviceCommand):  # e.g. Recalibrate, for the wearable on the laptop bridge
+                bridge = live.sensor_socket
+                if bridge is None:
+                    await _send(ws, ErrorEvent(code="sensor_not_connected", detail="no sensor bridge is connected"))
+                    continue
+                try:
+                    await _send(bridge, DeviceCommandOut(session_id=session_id, command=event.command))
+                except Exception:  # the bridge just went away; its own handler tells the app
+                    logger.info("device command for session %s not delivered", session_id)
                 continue
             if live.paused:
                 continue  # the user paused: ignore measurements until they resume
@@ -456,3 +480,142 @@ async def workout_socket(ws: WebSocket, session_id: UUID) -> None:
         if live is not None and live.socket is ws:  # not already replaced by a newer connection
             live.socket = None
             live.touch()
+
+
+# ------------------------------------------------------------------ laptop sensor bridge
+
+SENSOR_FORWARD_HZ = 10.0  # live wearable readings forwarded to the app, for display (all of them are stored)
+
+
+async def _tell_app(live: LiveSession, event: BaseModel) -> None:
+    """Best effort: the app may not be connected, or may be reconnecting; it gets the state in session_ready."""
+    target = live.socket
+    if target is None:
+        return
+    try:
+        await _send(target, event)
+    except Exception:
+        pass  # the app's own handler notices its socket is gone
+
+
+async def _authenticate_bridge(ws: WebSocket) -> tuple[LiveSession, str] | None:
+    """First message must be ``sensor_auth`` with a pairing code or a bridge token. Returns (live, token)."""
+    try:
+        raw = await asyncio.wait_for(ws.receive_text(), AUTH_TIMEOUT_S)
+        if len(raw) > MAX_MESSAGE_BYTES:
+            await ws.close(code=CLOSE_TOO_BIG)
+            return None
+        msg = SensorAuth.model_validate_json(raw)
+    except (asyncio.TimeoutError, ValidationError):
+        await ws.close(code=CLOSE_UNAUTHENTICATED)
+        return None
+
+    pairing = ws.app.state.sensor_pairing
+    if msg.pair_code is not None:
+        redeemed = pairing.redeem(msg.pair_code)
+        pair, token = (redeemed[0], redeemed[1]) if redeemed else (None, "")
+    else:
+        pair, token = pairing.check_token(msg.bridge_token), msg.bridge_token or ""
+    if pair is None:
+        await ws.close(code=CLOSE_UNAUTHENTICATED)
+        return None
+    live = await _load_live(ws, pair.session_id, pair.user_id)  # still active, still this user's
+    if live is None:
+        pairing.revoke_session(pair.session_id)
+        return None
+    return live, token
+
+
+@router.websocket("/ws/sensors")
+async def sensor_bridge_socket(ws: WebSocket) -> None:
+    """The laptop bridge (hardware/laptop/spine_bridge.py) streams the wearable here. Readings are stored like
+    ones relayed by the app, and forwarded to the app's workout socket (throttled) so a phone can show them."""
+    await ws.accept()
+    live: LiveSession | None = None
+    try:
+        authed = await _authenticate_bridge(ws)
+        if authed is None:
+            return
+        live, token = authed
+        session_id = live.session_id
+        old = live.sensor_socket
+        live.sensor_socket = ws
+        live.touch()
+        if old is not None and old is not ws:  # one bridge per workout: the newest wins
+            try:
+                await old.close(code=CLOSE_REPLACED)
+            except Exception:
+                pass
+        logger.info("sensor bridge connected session=%s", session_id)
+        await _send(ws, SensorReady(session_id=session_id, bridge_token=token, exercise=live.exercise.slug))
+        await _tell_app(live, SensorLink(session_id=session_id, connected=True))
+
+        bucket = TokenBucket(RATE_PER_S, BURST)
+        last_rate_warning = float("-inf")
+        last_forward = float("-inf")
+        connected_at = time.monotonic()
+        while True:
+            raw = await ws.receive_text()
+            if live.sensor_socket is not ws:
+                return
+            live.touch()
+            if live.finished:
+                await ws.close(code=CLOSE_NOT_ACTIVE)
+                return
+            if time.monotonic() - connected_at > MAX_CONNECTION_S:
+                await ws.close(code=CLOSE_UNAUTHENTICATED)  # reconnect with the token: re-checks the workout
+                return
+            if len(raw) > MAX_MESSAGE_BYTES:
+                await ws.close(code=CLOSE_TOO_BIG)
+                return
+            if not bucket.allow():
+                now = time.monotonic()
+                if now - last_rate_warning >= RATE_WARN_EVERY_S:
+                    last_rate_warning = now
+                    await _send(ws, ErrorEvent(code="rate_limited", detail="too many messages; slow down"))
+                continue
+            try:
+                event = sensor_bridge_adapter.validate_json(raw)
+            except ValidationError as exc:
+                fields = ",".join(".".join(map(str, e["loc"])) for e in exc.errors())
+                await _send(ws, ErrorEvent(code="invalid_message", detail=f"invalid fields: {fields}"))
+                continue
+            if event.session_id != session_id:
+                await _send(ws, ErrorEvent(code="session_mismatch", detail="session_id does not match this bridge"))
+                continue
+
+            if isinstance(event, SensorNote):
+                await _tell_app(live, SensorLink(session_id=session_id, connected=True, note=event.note))
+                continue
+
+            if not live.paused:  # same rules as data relayed by the app
+                _record(
+                    ws,
+                    lambda: sensor_readings(
+                        session_id,
+                        live.clock.to_datetime(f"device:{event.device_id}", event.timestamp_ms),
+                        event.device_id,
+                        event.data,
+                    ),
+                )
+                # Per-rep back-shape analysis (saved with each rep in Supabase) and posture cues, exactly as for data
+                # relayed by the app. Cues go to the APP's socket; with no app connected there is no one to tell.
+                _record_spine(live, event)
+                app_ws = live.socket
+                if app_ws is not None:
+                    try:
+                        await _coach_posture(app_ws, live, event)
+                    except Exception:
+                        logger.exception("posture cue from bridge data failed; the workout is unaffected")
+            now = time.monotonic()
+            if now - last_forward >= 1.0 / SENSOR_FORWARD_HZ:  # the display keeps updating while paused
+                last_forward = now
+                await _tell_app(live, SensorLive(session_id=session_id, device_id=event.device_id, data=event.data))
+    except WebSocketDisconnect:
+        logger.info("sensor bridge disconnected session=%s", live.session_id if live else None)
+    finally:
+        if live is not None and live.sensor_socket is ws:
+            live.sensor_socket = None
+            live.touch()
+            if not live.finished:
+                await _tell_app(live, SensorLink(session_id=live.session_id, connected=False))

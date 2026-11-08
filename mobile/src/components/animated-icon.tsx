@@ -1,9 +1,11 @@
 import { Image } from 'expo-image';
 import * as SplashScreen from 'expo-splash-screen';
 import { useState } from 'react';
-import { Dimensions, StyleSheet, View } from 'react-native';
+import { Dimensions, StyleSheet, Text, View } from 'react-native';
 import Animated, { Easing, Keyframe } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
+
+import { Grits } from '@/constants/grits';
 
 const INITIAL_SCALE_FACTOR = Dimensions.get('screen').height / 90;
 const DURATION = 600;
@@ -33,7 +35,13 @@ export function AnimatedSplashOverlay() {
     },
   });
 
-  const image = <Image style={styles.image} source={require('@/assets/images/expo-logo.png')} />;
+  // The GRITS mark (the home screen's wordmark and bar) on peach, faded out exactly as before.
+  const image = (
+    <View style={styles.mark}>
+      <Text style={styles.markWord}>GRITS</Text>
+      <View style={styles.markBar} />
+    </View>
+  );
 
   return animate ? (
     <Animated.View
@@ -140,9 +148,12 @@ const styles = StyleSheet.create({
   },
   splashOverlay: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: '#208AEF',
+    backgroundColor: Grits.peach,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1000,
   },
+  mark: { alignItems: 'flex-start' },
+  markWord: { color: Grits.cream, fontSize: 84, fontWeight: '900', letterSpacing: -2 },
+  markBar: { alignSelf: 'stretch', height: 12, backgroundColor: Grits.green, marginTop: 2 },
 });

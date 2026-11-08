@@ -16,7 +16,7 @@ from app.simulation import squat_messages
 from tests.fakes import ALICE, BOB, FakeAuth, FakeTiger, InMemoryStore, auth_message
 from tests.test_database import FakeClient, calls
 
-REQUESTED = ["squat", "push-up", "pull-up", "deadlift", "bench-press", "lunge", "plank"]
+REQUESTED = ["squat", "push-up", "pull-up", "deadlift", "bench-press", "lunge", "plank", "jumping-jack"]
 ANALYZED = ["squat", "push-up"]  # have a rep counter; everything else is logged only
 UNANALYZED = [s for s in REQUESTED if s not in ANALYZED]
 

@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from app.api import games as games_api
 from app.api import stats as stats_api
+from app.api import trends as trends_api
 from app.api import routes, websocket
 from app.services.agent import agent_from_env
 from app.services.auth import SupabaseAuth
@@ -22,6 +23,7 @@ from app.services.game_rooms import GameRooms
 from app.services.games_db import GameStore, GamesNotSetUpError
 from app.services.ingest import SensorIngestor
 from app.services.ratelimit import KeyedLimiter
+from app.services.sensor_pairing import SensorPairing
 from app.services.session_manager import DEFAULT_IDLE_TTL_S, DEFAULT_SWEEP_INTERVAL_S, LiveSessions, sweep_loop
 from app.services.timeseries import TigerStore
 
@@ -97,6 +99,7 @@ def create_app(
     app.state.games = games if games is not None else GameStore()  # GRIT Games results and races (Supabase)
     app.state.rooms = rooms if rooms is not None else GameRooms()  # live 1v1 rooms, in memory
     app.state.room_drivers = {}
+    app.state.sensor_pairing = SensorPairing()  # laptop bridge <-> workout codes and tokens (in memory)
     app.state.agent = agent if agent is not None else agent_from_env()  # LLM coach; rules-only unless configured
     app.state.summary_cache = OrderedDict()  # finished workouts' recaps (immutable, so cacheable)
     app.state.summary_limiter = KeyedLimiter(rate_per_s=6 / 60, burst=3)  # recaps can cost an LLM call
@@ -116,6 +119,7 @@ def create_app(
     app.include_router(routes.router)
     app.include_router(games_api.router)
     app.include_router(stats_api.router)
+    app.include_router(trends_api.router)
     app.include_router(websocket.router)
     return app
 

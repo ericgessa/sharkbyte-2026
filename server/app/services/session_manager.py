@@ -55,6 +55,7 @@ class LiveSession:
     paused: bool = False  # frames are ignored while paused
     pain_reported: bool = False
     socket: Any = None  # the one WebSocket currently driving this session, if any
+    sensor_socket: Any = None  # the laptop bridge streaming the wearable for this session, if any
     last_activity: float = field(default_factory=time.monotonic)
 
     def touch(self) -> None:
@@ -90,11 +91,11 @@ class LiveSessions:
         return len(self._live)
 
     def idle(self, ttl_s: float, now: float | None = None) -> list[LiveSession]:
-        """Sessions with no socket, nothing in flight, and no activity for ``ttl_s`` seconds."""
+        """Sessions with no socket (app or sensor bridge), nothing in flight, and no activity for ``ttl_s`` seconds."""
         now = time.monotonic() if now is None else now
         return [
             s for s in self._live.values()
-            if s.socket is None and not s.save_tasks and now - s.last_activity >= ttl_s
+            if s.socket is None and s.sensor_socket is None and not s.save_tasks and now - s.last_activity >= ttl_s
         ]
 
 

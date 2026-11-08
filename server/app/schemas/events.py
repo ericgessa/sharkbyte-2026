@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from app.schemas.sensors import SensorUpdate
+from app.schemas.sensors import SensorData, SensorUpdate
 from app.services.exercises import DEFAULT_EXERCISE, UnknownExerciseError
 from app.services.exercises import resolve as resolve_exercise
 
@@ -81,8 +81,46 @@ class UserSignal(_Strict):
     signal: Literal["pain", "pause", "resume"]
 
 
-IncomingEvent = Annotated[Union[PoseUpdate, SensorUpdate, UserSignal], Field(discriminator="type")]
-incoming_adapter: TypeAdapter[PoseUpdate | SensorUpdate | UserSignal] = TypeAdapter(IncomingEvent)
+class DeviceCommand(_Strict):
+    """App -> server -> the laptop bridge holding the wearable (see ``/ws/workouts/{id}/sensors``)."""
+
+    schema_version: Literal[1]
+    type: Literal["device_command"]
+    session_id: UUID
+    command: Literal["recalibrate"]
+
+
+IncomingEvent = Annotated[Union[PoseUpdate, SensorUpdate, UserSignal, DeviceCommand], Field(discriminator="type")]
+incoming_adapter: TypeAdapter[PoseUpdate | SensorUpdate | UserSignal | DeviceCommand] = TypeAdapter(IncomingEvent)
+
+
+class SensorAuth(_Strict):
+    """First message on ``/ws/sensors``: a pairing code from the app (first time) or the bridge token (reconnect)."""
+
+    schema_version: Literal[1]
+    type: Literal["sensor_auth"]
+    pair_code: str | None = Field(default=None, min_length=1, max_length=32)
+    bridge_token: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "SensorAuth":
+        if (self.pair_code is None) == (self.bridge_token is None):
+            raise ValueError("send exactly one of pair_code or bridge_token")
+        return self
+
+
+class SensorNote(_Strict):
+    """Bridge -> server: a human-readable wearable status line (calibration phase, pairing), shown in the app."""
+
+    schema_version: Literal[1]
+    type: Literal["sensor_note"]
+    session_id: UUID
+    note: str = Field(min_length=1, max_length=200)
+
+
+# What the sensor bridge socket accepts (it never sends pose data or user signals).
+SensorBridgeEvent = Annotated[Union[SensorUpdate, SensorNote], Field(discriminator="type")]
+sensor_bridge_adapter: TypeAdapter[SensorUpdate | SensorNote] = TypeAdapter(SensorBridgeEvent)
 
 
 # ------------------------------------------------------------------ outgoing
@@ -98,6 +136,53 @@ class SessionReady(_Strict):
     analysis_supported: bool = True
     paused: bool = False
     coaching_enabled: bool = True  # False once the user has reported pain in this session
+    sensor_connected: bool = False  # a laptop bridge is streaming wearable data for this workout right now
+
+
+class SensorReady(_Strict):
+    """Server -> bridge after ``sensor_auth``: which workout to stream to, and the token for reconnecting."""
+
+    schema_version: Literal[1] = SCHEMA_VERSION
+    type: Literal["sensor_ready"] = "sensor_ready"
+    session_id: UUID
+    bridge_token: str
+    exercise: str
+
+
+class SensorCode(_Strict):
+    """REST reply: the code to show the user, to type into the laptop bridge."""
+
+    code: str
+    expires_in_s: int
+
+
+class SensorLive(_Strict):
+    """Server -> app: the latest wearable reading from the bridge, throttled (about 10/s) for display."""
+
+    schema_version: Literal[1] = SCHEMA_VERSION
+    type: Literal["sensor_live"] = "sensor_live"
+    session_id: UUID
+    device_id: str
+    data: SensorData
+
+
+class SensorLink(_Strict):
+    """Server -> app: the bridge connected or went away, or sent a status note."""
+
+    schema_version: Literal[1] = SCHEMA_VERSION
+    type: Literal["sensor_link"] = "sensor_link"
+    session_id: UUID
+    connected: bool
+    note: str | None = None
+
+
+class DeviceCommandOut(_Strict):
+    """Server -> bridge: something the user asked the wearable to do."""
+
+    schema_version: Literal[1] = SCHEMA_VERSION
+    type: Literal["device_command"] = "device_command"
+    session_id: UUID
+    command: Literal["recalibrate"]
 
 
 class SessionState(_Strict):
@@ -164,7 +249,7 @@ class TrackingStatus(_Strict):
 class ErrorEvent(_Strict):
     schema_version: Literal[1] = SCHEMA_VERSION
     type: Literal["error"] = "error"
-    code: Literal["invalid_message", "session_mismatch", "rate_limited"]
+    code: Literal["invalid_message", "session_mismatch", "rate_limited", "sensor_not_connected"]
     detail: str
 
 

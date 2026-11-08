@@ -215,6 +215,14 @@ workout the server also reads `imu_pitch_deg` / `imu_roll_deg` as the tilt of an
 send a posture `coaching_feedback` (below); nothing else is sent back for sensor data. If Tiger Data is not
 configured the message is still accepted, analyzed for posture, and not stored.
 Ignored while the workout is paused. Invalid messages get an `error` event like any other.
+The same message can instead come from the **laptop sensor bridge** on its own socket (`/ws/sensors`, below), which
+is how a phone gets wearable data.
+
+### Client → server: `device_command`
+
+`{"schema_version":1,"type":"device_command","session_id":"UUID","command":"recalibrate"}`, forwarded to the
+laptop bridge, which tells the wearable. With no bridge connected the reply is an `error` with code
+`sensor_not_connected`.
 
 ### Client → server: `user_signal` (the user's own buttons)
 
@@ -347,7 +355,37 @@ that don't know this event can ignore it (the reference app's parser drops unkno
 `{"type":"tracking_status","session_id":"UUID","tracking":"lost"|"recovered", ...}`
 
 `error` — the socket stays open:
-`{"type":"error","code":"invalid_message"|"session_mismatch"|"rate_limited","detail":"..."}`
+`{"type":"error","code":"invalid_message"|"session_mismatch"|"rate_limited"|"sensor_not_connected","detail":"..."}`
+
+`sensor_live`: the latest wearable reading from the laptop bridge, at most about 10/s (every reading is stored;
+this is only for display). Sent while paused too, so calibration can be watched.
+`{"type":"sensor_live","session_id":"UUID","device_id":"esp32-spine","data":{"spine_lumbar_deg":5.6,...}}`
+
+`sensor_link`: the bridge connected (`connected: true`), went away (`false`), or sent a status note (pairing,
+calibration: `note`, otherwise `null`). `session_ready.sensor_connected` gives the current state on (re)connect.
+`{"type":"sensor_link","session_id":"UUID","connected":true,"note":"wearable calibrating: stand tall and hold still"}`
+
+## Laptop sensor bridge: `POST /api/workouts/{session_id}/sensor-code` and `WS /ws/sensors`
+
+For the wearable's base station plugged into a laptop (`hardware/laptop/spine_bridge.py`), so the app needs no
+USB access and works on a phone. The user's password never reaches the bridge:
+
+1. The app calls `POST /api/workouts/{session_id}/sensor-code` (bearer token, the user's **active** workout;
+   404 if not theirs, 409 if finished) and shows `{"code":"ABCD-2345","expires_in_s":600}`. A new request
+   replaces the previous code. Case and dashes don't matter.
+2. The bridge connects to `WS /ws/sensors` and sends, within 10 s,
+   `{"schema_version":1,"type":"sensor_auth","pair_code":"ABCD-2345"}`. The code works **once**.
+3. The server replies `{"type":"sensor_ready","session_id":"UUID","bridge_token":"...","exercise":"squat"}`.
+   After a dropped connection the bridge reconnects with `{"...","type":"sensor_auth","bridge_token":"..."}`
+   instead (send exactly one of the two).
+4. The bridge sends `sensor_update` messages (same format and limits as above; `session_id` must be the one from
+   `sensor_ready`) and optionally `{"type":"sensor_note","session_id":"UUID","note":"..."}` (≤ 200 chars),
+   shown to the app as `sensor_link`. It receives `device_command` messages to pass to the wearable.
+
+Close codes: `4401` wrong/used/expired code, unknown token (tokens are in memory: a server restart forgets them,
+so get a new code) or the 3-hour limit; `4404` / `4409` the workout is gone or finished (its token stops working);
+`4410` a newer bridge took over this workout; `1009` message over 16 KB. Wrong codes are limited to 30 per minute
+across all callers; past that, every redemption is refused until the minute is up.
 
 ### Not yet defined
 

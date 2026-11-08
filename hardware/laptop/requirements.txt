@@ -1,2 +1,2 @@
 pyserial>=3.5
-websockets>=12  # only for --upload
+websockets>=13  # spine_bridge.py, and spine_receiver.py --upload

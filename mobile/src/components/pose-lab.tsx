@@ -12,7 +12,7 @@ import { detectOnImageUrl } from '@/pose/mediapipe';
 import { PoseStreamer, type ServerEvent } from '@/pose/protocol';
 import { simulatedPushUpFrames, simulatedSquatFrames } from '@/pose/simulate';
 import { getCoachReport, type CoachReport } from '@/pose/workout-client';
-import { createWorkout, finishWorkout, WorkoutSocket, type CreatedWorkout } from '@/pose/workout-client';
+import { createWorkout, finishWorkout, getSensorCode, WorkoutSocket, type CreatedWorkout } from '@/pose/workout-client';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken, signOut } from '@/utils/auth';
 import { describeWearableLine, parseWearableLine, SensorStreamer, type SpineData } from '@/pose/wearable';
@@ -80,6 +80,9 @@ export function PoseLab() {
   const [wearable, setWearable] = useState<'off' | 'connecting' | 'on'>('off');
   const [wearableNote, setWearableNote] = useState<string | null>(null);
   const [spine, setSpine] = useState<SpineData | null>(null);
+  // The laptop bridge (hardware/laptop/spine_bridge.py) streams the wearable through the server: works on a phone.
+  const [bridge, setBridge] = useState(false);
+  const [pairCode, setPairCode] = useState<string | null>(null);
 
   const workoutRef = useRef<CreatedWorkout | null>(null);
   const socketRef = useRef<WorkoutSocket | null>(null);
@@ -150,9 +153,27 @@ export function PoseLab() {
       setWearable('on');
       await conn.send('s'); // JSON stream mode
     } catch (e) {
+      console.log(e);
       setWearable('off');
       setWearableNote(messageOf(e)); // includes the user closing the port chooser
     }
+  };
+
+  const pairBridge = async () => {
+    const w = workoutRef.current;
+    if (!w) return;
+    try {
+      const r = await getSensorCode(getApiUrl(), await getAccessToken(), w.session_id);
+      setPairCode(r.code);
+      setWearableNote(`On the laptop: python hardware/laptop/spine_bridge.py, then type ${r.code} (valid ${Math.round(r.expires_in_s / 60)} min)`);
+    } catch (e) {
+      setWearableNote(`pairing code: ${messageOf(e)}`);
+    }
+  };
+
+  const recalibrate = () => {
+    if (wearableRef.current) void wearableRef.current.send('c'); // plugged into this browser
+    else if (workoutRef.current) socketRef.current?.sendDeviceCommand(workoutRef.current.session_id, 'recalibrate'); // via the bridge
   };
 
   const pushAngles = (a: PoseAngles) => {
@@ -172,7 +193,18 @@ export function PoseLab() {
         setConnection('connected');
         setAnalysis(e.analysis_supported);
         setReps(e.rep_count);
+        setBridge(e.sensor_connected === true);
         note(`ready: ${e.exercise}${e.analysis_supported ? '' : ' (logged only: reps are not counted for this exercise yet)'}`);
+        break;
+      case 'sensor_live':
+        if (!wearableRef.current) spineRef.current = e.data; // a wearable plugged in here takes priority
+        break;
+      case 'sensor_link':
+        setBridge(e.connected);
+        if (e.connected) setPairCode(null);
+        else if (!wearableRef.current) spineRef.current = null;
+        if (e.note) setWearableNote(`laptop bridge: ${e.note}`);
+        else if (!wearableRef.current) setWearableNote(e.connected ? 'laptop bridge connected' : 'laptop bridge disconnected');
         break;
       case 'rep_completed':
         setReps(e.rep_count);
@@ -245,6 +277,9 @@ export function PoseLab() {
       socketRef.current = null;
       streamerRef.current = null;
       sensorStreamerRef.current = null;
+      setBridge(false);
+      setPairCode(null);
+      if (!wearableRef.current) spineRef.current = null;
       setPhase('finished');
     }
     if (finished) await loadReport(w.session_id);
@@ -392,28 +427,33 @@ export function PoseLab() {
 
           <Section title="2. Spine wearable">
             <ThemedText type="small" themeColor="textSecondary">
-              Plug in either the wearable itself (hardware/firmware/spine_test) or the wireless base station
-              (hardware/firmware/base_station). Close the Arduino Serial Monitor first: only one program can use the
-              port. Desktop Chrome or Edge only. Readings go to the backend while a workout is running.
+              Any device (phone included): plug the base station into a laptop and run hardware/laptop/spine_bridge.py
+              there. Start a workout, press Pair laptop bridge and type the code into the bridge. The server stores the
+              readings and shows them here. Or, in desktop Chrome/Edge, plug it into this computer and press Connect
+              wearable. Either way, only one program can hold the port: close the Arduino Serial Monitor.
             </ThemedText>
             <View style={styles.row}>
+              <Btn label="Pair laptop bridge" onPress={() => void pairBridge()} disabled={!live || bridge || wearable === 'on'} testID="lab-bridge-pair" />
               <Btn
-                label={wearable === 'connecting' ? 'Connecting...' : 'Connect wearable'}
+                label={wearable === 'connecting' ? 'Connecting...' : 'Connect wearable (USB here)'}
                 onPress={connectSpine}
-                disabled={!WEARABLE_SERIAL_AVAILABLE || wearable !== 'off'}
+                disabled={!WEARABLE_SERIAL_AVAILABLE || wearable !== 'off' || bridge}
                 testID="lab-wearable-connect"
               />
-              <Btn label="Recalibrate" onPress={() => void wearableRef.current?.send('c')} disabled={wearable !== 'on'} />
+              <Btn label="Recalibrate" onPress={recalibrate} disabled={wearable !== 'on' && !bridge} />
               <Btn label="Disconnect" onPress={() => void wearableRef.current?.close()} disabled={wearable !== 'on'} />
             </View>
+            {pairCode && (
+              <ThemedText type="subtitle" testID="lab-bridge-code">
+                {pairCode}
+              </ThemedText>
+            )}
             <ThemedText type="code" testID="lab-wearable">
-              {!WEARABLE_SERIAL_AVAILABLE
-                ? 'Web Serial is not available in this browser.'
-                : wearable !== 'on'
-                  ? 'wearable not connected'
-                  : spine
-                    ? `torso ${fmt(spine.imu_pitch_deg)} side ${fmt(spine.imu_roll_deg)} | upper ${fmt(spine.spine_upper_deg)} | mid ${fmt(spine.spine_mid_deg)} | lumbar ${fmt(spine.spine_lumbar_deg)}${live ? ' | sending' : ''}`
-                    : 'connected, waiting for calibration (stand still, then bend forward)'}
+              {wearable !== 'on' && !bridge
+                ? 'wearable not connected'
+                : spine
+                  ? `torso ${fmt(spine.imu_pitch_deg)} side ${fmt(spine.imu_roll_deg)} | upper ${fmt(spine.spine_upper_deg)} | mid ${fmt(spine.spine_mid_deg)} | lumbar ${fmt(spine.spine_lumbar_deg)} | ${wearable === 'on' ? (live ? 'USB, sending' : 'USB') : 'via laptop bridge'}`
+                  : 'connected, waiting for calibration (stand still, then bend forward)'}
             </ThemedText>
             {wearableNote && (
               <ThemedText type="small" themeColor="textSecondary">

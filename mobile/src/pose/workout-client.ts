@@ -87,6 +87,91 @@ export async function getCoachReport(
   return (await res.json()) as CoachReport;
 }
 
+/** One exercise's totals from GET /api/stats (completed workouts only). */
+export type ExerciseStats = {
+  exercise: string;
+  workouts: number;
+  total_reps: number;
+  best_workout_reps: number;
+  last_workout_at: string | null;
+};
+
+/** The caller's progress across workouts (only the parts the app uses so far). New users get zeros. */
+export async function getStats(
+  apiUrl: string,
+  accessToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ per_exercise: ExerciseStats[] }> {
+  const offset = -new Date().getTimezoneOffset(); // minutes east of UTC, as the server expects
+  const res = await fetchImpl(`${apiUrl.replace(/\/+$/, '')}/api/stats?tz_offset_minutes=${offset}`, {
+    headers: authHeaders(accessToken),
+  });
+  if (!res.ok) throw await apiError(res);
+  return (await res.json()) as { per_exercise: ExerciseStats[] };
+}
+
+/** One floating fact: a big word and a small caption. `tone` picks its bubble color. */
+export type TrendFact = { key: string; big: string; small: string; tone: 'hype' | 'warm' | 'calm' | string };
+/** GET /api/trends/{exercise}: facts computed by the server, headline + advice worded by the AI coach (or rules). */
+export type TrendWave = { session_id: string; at: string; reps: number; bars: { d: number | null; t: number | null }[] };
+export type Trends = {
+  exercise: string;
+  sets: number;
+  facts: TrendFact[];
+  headline: string;
+  advice: string;
+  source: 'agent' | 'rules' | string;
+  /** Recent sets' rep waves, oldest first (one bar per rep: d = deepest angle, t = ms). */
+  waves?: TrendWave[];
+};
+
+/** Your trend for one exercise. `sessionId`: the set just finished (the facts focus on it). Can take ~15 s with the AI. */
+export async function getTrends(
+  apiUrl: string,
+  accessToken: string,
+  exercise: string,
+  sessionId?: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Trends> {
+  const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+  const res = await fetchImpl(`${apiUrl.replace(/\/+$/, '')}/api/trends/${encodeURIComponent(exercise)}${q}`, {
+    headers: authHeaders(accessToken),
+  });
+  if (!res.ok) throw await apiError(res);
+  return (await res.json()) as Trends;
+}
+
+/** Save the phone's rep count for an exercise the server doesn't count (jumping jacks). Call before finishWorkout. */
+export async function saveDeviceReps(
+  apiUrl: string,
+  accessToken: string,
+  sessionId: string,
+  reps: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const res = await fetchImpl(`${apiUrl.replace(/\/+$/, '')}/api/workouts/${sessionId}/device-reps`, {
+    method: 'POST',
+    headers: authHeaders(accessToken),
+    body: JSON.stringify({ reps }),
+  });
+  if (!res.ok) throw await apiError(res);
+}
+
+/** A one-time code (e.g. "ABCD-2345") to type into the laptop sensor bridge (hardware/laptop/spine_bridge.py). */
+export async function getSensorCode(
+  apiUrl: string,
+  accessToken: string,
+  sessionId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ code: string; expires_in_s: number }> {
+  const res = await fetchImpl(`${apiUrl.replace(/\/+$/, '')}/api/workouts/${sessionId}/sensor-code`, {
+    method: 'POST',
+    headers: authHeaders(accessToken),
+  });
+  if (!res.ok) throw await apiError(res);
+  return (await res.json()) as { code: string; expires_in_s: number };
+}
+
 export type SocketHandlers = {
   /** Every parsed server event (including `session_ready`). */
   onEvent: (event: ServerEvent) => void;
@@ -161,6 +246,13 @@ export class WorkoutSocket {
   sendSignal(sessionId: string, signal: UserSignal): boolean {
     if (!this.isReady) return false;
     this.ws!.send(JSON.stringify({ schema_version: 1, type: 'user_signal', session_id: sessionId, signal }));
+    return true;
+  }
+
+  /** Ask the wearable on the laptop bridge to recalibrate. The server answers `sensor_not_connected` if none is. */
+  sendDeviceCommand(sessionId: string, command: 'recalibrate'): boolean {
+    if (!this.isReady) return false;
+    this.ws!.send(JSON.stringify({ schema_version: 1, type: 'device_command', session_id: sessionId, command }));
     return true;
   }
 

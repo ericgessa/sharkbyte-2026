@@ -4,6 +4,7 @@
  */
 
 import type { PoseAngles } from './angles';
+import type { SpineData } from './wearable';
 
 export type PoseUpdate = {
   schema_version: 1;
@@ -39,7 +40,13 @@ export type ServerEvent =
       analysis_supported: boolean;
       paused: boolean;
       coaching_enabled: boolean;
+      /** A laptop sensor bridge is streaming the spine wearable for this workout right now. */
+      sensor_connected?: boolean;
     }
+  /** Spine wearable reading forwarded from the laptop bridge (about 10/s, for display). */
+  | { type: 'sensor_live'; session_id: string; device_id: string; data: SpineData }
+  /** The laptop bridge connected / went away, or sent a status note (pairing, calibration). */
+  | { type: 'sensor_link'; session_id: string; connected: boolean; note: string | null }
   | { type: 'rep_completed'; session_id: string; rep_count: number; metrics: RepMetrics }
   | {
       /** An attempt that did NOT count, and why. `rep_count` is unchanged. Show `message` as-is. */
@@ -57,7 +64,17 @@ export type ServerEvent =
   | { type: 'session_state'; session_id: string; paused: boolean; coaching_enabled: boolean }
   | { type: 'error'; code: string; detail: string };
 
-const KNOWN = new Set(['session_ready', 'rep_completed', 'rep_rejected', 'coaching_feedback', 'tracking_status', 'session_state', 'error']);
+const KNOWN = new Set([
+  'session_ready',
+  'rep_completed',
+  'rep_rejected',
+  'coaching_feedback',
+  'tracking_status',
+  'session_state',
+  'error',
+  'sensor_live',
+  'sensor_link',
+]);
 
 /** Parse one WebSocket text frame. Returns null for anything that is not a known server event. */
 export function parseServerEvent(raw: string): ServerEvent | null {

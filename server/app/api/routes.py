@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
-from app.schemas.events import CreateWorkoutRequest, DeleteAccountRequest, StatsOut, WorkoutOut, WorkoutSummaryOut
+from app.schemas.events import CreateWorkoutRequest, DeleteAccountRequest, SensorCode, StatsOut, WorkoutOut, WorkoutSummaryOut
 from app.services import persistence
+from app.services.sensor_pairing import CODE_TTL_S, format_code
 from app.services.exercises import DEFAULT_EXERCISE, all_exercises, for_stored_name
 from app.services.agent import rules_summary
 from app.services.analytics import readings_in_window
@@ -218,6 +219,7 @@ async def delete_workout(session_id: UUID, request: Request, user_id: UserId) ->
 
     await asyncio.to_thread(state.store.delete_session, session_id, user_id)  # cascades to reps + coaching events
     state.live.remove(session_id)
+    state.sensor_pairing.revoke_session(session_id)
     logger.info("workout deleted id=%s user=%s", session_id, user_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -266,6 +268,8 @@ async def delete_account(body: DeleteAccountRequest, request: Request, user_id: 
 
     for live in live_sessions:
         state.live.remove(live.session_id)
+    for sid in session_ids:
+        state.sensor_pairing.revoke_session(UUID(str(sid)))
     invalidate = getattr(state.auth, "invalidate_user", None)
     if invalidate:
         invalidate(user_id)  # the deleted user's token must stop working at once, not after the cache expires
@@ -369,6 +373,19 @@ def get_workout(session_id: UUID, request: Request, user_id: UserId) -> WorkoutO
     return to_out(row, request.app.state.live.get(session_id))
 
 
+@router.post("/api/workouts/{session_id}/sensor-code", response_model=SensorCode)
+def sensor_code(session_id: UUID, request: Request, user_id: UserId) -> SensorCode:
+    """A one-time code that pairs the laptop sensor bridge (hardware/laptop/spine_bridge.py) with this workout.
+    Show it to the user; they type it into the bridge. A new request replaces the previous code. Only for an
+    active workout (409 otherwise)."""
+    row = _owned_session(request, session_id, user_id)
+    if row["status"] != "active":
+        raise HTTPException(status.HTTP_409_CONFLICT, "workout is not active")
+    code = request.app.state.sensor_pairing.issue_code(session_id, user_id)
+    logger.info("sensor pairing code issued session=%s", session_id)
+    return SensorCode(code=format_code(code), expires_in_s=int(CODE_TTL_S))
+
+
 @router.post("/api/workouts/{session_id}/finish", response_model=WorkoutOut)
 async def finish_workout(session_id: UUID, request: Request, user_id: UserId) -> WorkoutOut:
     store = request.app.state.store
@@ -404,5 +421,6 @@ async def finish_workout(session_id: UUID, request: Request, user_id: UserId) ->
     if done is None:  # raced with another finish
         done = await asyncio.to_thread(_owned_session, request, session_id, user_id)
     request.app.state.live.remove(session_id)
+    request.app.state.sensor_pairing.revoke_session(session_id)
     logger.info("session finished id=%s reps=%d", session_id, total)
     return to_out(done)

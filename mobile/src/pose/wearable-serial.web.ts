@@ -38,7 +38,17 @@ export async function connectWearable(
   const api = serial();
   if (!api) throw new Error('This browser has no Web Serial: use desktop Chrome or Edge.');
   const port = await api.requestPort();
-  await port.open({ baudRate: BAUD });
+  try {
+    await port.open({ baudRate: BAUD });
+  } catch (e) {
+    // Windows lets one program hold a COM port; NetworkError here nearly always means something else has it.
+    if (e instanceof Error && e.name === 'NetworkError')
+      throw new Error(
+        'Could not open the wearable port: another program is probably using it ' +
+          '(Arduino Serial Monitor, PlatformIO monitor, another tab). Close it, or replug the ESP32, and try again.',
+      );
+    throw e;
+  }
   if (!port.readable) throw new Error('The port opened but cannot be read.');
 
   const reader = port.readable.getReader();

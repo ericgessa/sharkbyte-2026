@@ -1,7 +1,9 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-const BACKEND_PORT = 8000;
+// The backend's port on the Expo computer. Set EXPO_PUBLIC_API_PORT to change it; the host still follows whatever
+// address the phone used to reach Expo (Wi-Fi, hotspot...), so switching networks keeps working.
+const BACKEND_PORT = Number(process.env.EXPO_PUBLIC_API_PORT) || 8000;
 
 /** "192.168.1.20:8081" -> "192.168.1.20". */
 export function hostFromHostUri(hostUri: string | null | undefined): string | null {

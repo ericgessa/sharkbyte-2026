@@ -12,4 +12,6 @@ export type PoseFrameInfo = {
 export type PoseCameraProps = {
   /** Called for every processed camera frame. Keep it cheap (store the angles; don't set state on every call). */
   onFrame?: (info: PoseFrameInfo) => void;
+  /** Optional colors for the Start/Stop camera button (defaults to the original blue). */
+  tint?: { button: string; text: string };
 };

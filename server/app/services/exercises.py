@@ -99,6 +99,8 @@ _REGISTRY: tuple[Exercise, ...] = (
     Exercise("bench-press", "Bench press", aliases=("bench", "benchpresses"), primary_angles=("left_elbow_angle", "right_elbow_angle")),
     Exercise("lunge", "Lunge", aliases=("lunges",), primary_angles=("left_knee_angle", "right_knee_angle")),
     Exercise("plank", "Plank", aliases=("planks",), primary_angles=("left_hip_angle", "right_hip_angle")),
+    # Logged only: the app counts jumping jacks on the phone from arm/leg positions (the server gets no shoulder angle).
+    Exercise("jumping-jack", "Jumping jack", aliases=("jumping jacks", "star jump", "star jumps"), primary_angles=("left_hip_angle", "right_hip_angle")),
 )
 
 _BY_SLUG: dict[str, Exercise] = {e.slug: e for e in _REGISTRY}

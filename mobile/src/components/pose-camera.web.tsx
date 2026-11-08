@@ -25,7 +25,7 @@ function cameraErrorMessage(e: unknown): string {
  * Webcam + MediaPipe pose tracking in the browser. All processing happens on this device: video never leaves it.
  * Draws the detected skeleton over a mirrored ("selfie") view and reports angles for every frame via `onFrame`.
  */
-export function PoseCamera({ onFrame }: PoseCameraProps) {
+export function PoseCamera({ onFrame, tint }: PoseCameraProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -188,8 +188,8 @@ export function PoseCamera({ onFrame }: PoseCameraProps) {
         accessibilityRole="button"
         onPress={camera === 'on' ? stop : start}
         disabled={camera === 'starting' || model.status === 'error'}
-        style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
-        <ThemedText type="smallBold" style={styles.buttonText}>
+        style={({ pressed }) => [styles.button, tint && { backgroundColor: tint.button, borderRadius: 999 }, pressed && styles.pressed]}>
+        <ThemedText type="smallBold" style={[styles.buttonText, tint && { color: tint.text }]}>
           {camera === 'on' ? 'Stop camera' : 'Start camera'}
         </ThemedText>
       </Pressable>

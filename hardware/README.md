@@ -42,6 +42,8 @@ Leave unconnected: BNO085 PS0/PS1/INT/RST, DRV2605L IN, GY-521 XDA/XCL/INT.
 | `firmware/spine_test` | USB-only sketch: all four sensors, calibration, spine section angles, `s` stream mode for the web page |
 | `firmware/spine_wearable` | Wearable sketch with wireless streaming (ESP-NOW) to the base station |
 | `firmware/base_station` | Flash onto a second ESP32 plugged into the laptop; prints JSON over USB |
+| `firmware/spine_test` | USB-only version of the wearable (no radio): all four sensors, calibration, section angles |
+| `laptop/spine_bridge.py` | Reads the base station and streams it to the backend (paired with a workout by a code from the app) |
 | `laptop/spine_receiver.py` | Reads the base station, shows live data, saves a CSV, and (with `--upload`) sends it to the server |
 | `tests/bno_test` | BNO085 alone: I2C scan + yaw/pitch/roll |
 | `tests/mpu_dual_test` | Two MPUs with AD0 select |
@@ -108,19 +110,25 @@ The server stores all five values in Tiger Data and uses the section angles for 
 ## Running wirelessly
 
 ```
-wearable (spine_wearable) --ESP-NOW, 50 Hz--> base station (base_station) --USB, JSON lines--> /pose page (app) or laptop/spine_receiver.py
+wearable --ESP-NOW, 50 Hz--> base station --USB--> laptop/spine_bridge.py --WebSocket--> backend --> app (any device, phone too)
+                                                                                             \--> Tiger Data
 ```
 
 1. Flash `firmware/spine_wearable` onto the wearable and `firmware/base_station` onto the base ESP32.
    Both must share the same `PAIR_KEY` and `WIFI_CHANNEL`.
 2. Close the Arduino Serial Monitor (only one program can hold the port).
-3. **Into the app and database:** open the `/pose` page in desktop Chrome or Edge, press *Connect wearable* and
-   pick the base station's port. While a workout is running, each reading is sent to the server as a
-   `sensor_update` and stored in Tiger Data. *Recalibrate* is relayed to the wearable.
-4. **Or just log to a CSV on the laptop:** `pip install -r laptop/requirements.txt` and
+3. **Into the app and database (recommended, works with the app on a phone):** plug the base station into the
+   laptop, `pip install -r laptop/requirements.txt`, and run
+   `python laptop/spine_bridge.py --server http://<backend address>:8000` (the same address the app uses; add
+   `--port COM5` if the port isn't found). In the app's `/pose` page start a workout, press *Pair laptop bridge*
+   and type the code it shows into the bridge. Readings are stored in Tiger Data and shown live in the app;
+   *Recalibrate* in the app reaches the wearable. When the workout finishes the bridge asks for the next code.
+4. **Or, with the app open in desktop Chrome/Edge on the same laptop:** press *Connect wearable (USB here)* and
+   pick the port (Web Serial). The browser relays the readings itself.
+5. **Or just log to a CSV on the laptop:** `pip install -r laptop/requirements.txt` and
    `python laptop/spine_receiver.py` (add `--port COM5` if needed). Type `c` + Enter to recalibrate;
    Ctrl+C stops and saves `spine_<date>_<time>.csv` in the current folder.
-5. Power the wearable; it pairs automatically and calibrates as above.
+6. Power the wearable; it pairs automatically and calibrates as above.
 
 Pairing: the base beacons twice a second until a wearable pairs, then sends a heartbeat twice a second.
 If either side hears nothing for 3 s it drops the link and re-pairs on its own.
@@ -171,7 +179,7 @@ Back-shape cues need the camera to count the reps, so for coaching use way 1; wa
 - A section reacts to the wrong sensor: the AD0 wires don't match `MPU_AD0`
   (listed bottom to top: sacrum, lower back, mid back). Fix the wires or the array.
 - Two MPUs reading identical values: both are answering at 0x68; run `tests/ad0_phase_check`.
-- Receiver or `/pose` page can't open the port: close the Arduino Serial Monitor (and the other of the two).
+- Bridge, receiver or `/pose` page can't open the port: close the Arduino Serial Monitor and the other two.
 - Base stays at "waiting for wearable": check the wearable is powered and both sketches share
   `PAIR_KEY` / `WIFI_CHANNEL`. The wearable's USB Serial Monitor shows `[radio] ...` status lines.
 - `lost` climbing fast: move the base station closer or off the back of the laptop.

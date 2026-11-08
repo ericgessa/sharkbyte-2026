@@ -8,7 +8,7 @@ import { LIBRARY_URL, MEDIAPIPE_VERSION, MODEL_URL, WASM_BASE } from './mediapip
 import { parseServerEvent, PoseStreamer } from './protocol.ts';
 import { simulatedPushUpFrames, simulatedSquatFrames } from './simulate.ts';
 import { describeWearableLine, LineSplitter, parseWearableLine, SensorStreamer } from './wearable.ts';
-import { createWorkout, finishWorkout, getCoachReport, toWsUrl, WorkoutSocket } from './workout-client.ts';
+import { createWorkout, finishWorkout, getCoachReport, getSensorCode, toWsUrl, WorkoutSocket } from './workout-client.ts';
 
 const near = (a, b, eps = 0.06) => assert.ok(Math.abs(a - b) <= eps, `${a} is not within ${eps} of ${b}`);
 
@@ -287,6 +287,28 @@ test('pause, resume and pain are sent as user_signal messages for this workout',
   assert.deepEqual(ws.sent.at(-1), { schema_version: 1, type: 'user_signal', session_id: 'sid-9', signal: 'pain' });
 });
 
+test('laptop-bridge wearable data and link changes reach the handler; Recalibrate goes out as device_command', () => {
+  const { s, ws, events } = socket();
+  ws.open();
+  assert.equal(s.sendDeviceCommand('sid-9', 'recalibrate'), false); // not ready yet
+  ws.receive({ type: 'session_ready', session_id: 'sid-9', rep_count: 0, exercise: 'squat', analysis_supported: true, paused: false, coaching_enabled: true, sensor_connected: true });
+  ws.receive({ type: 'sensor_live', session_id: 'sid-9', device_id: 'esp32-spine', data: { spine_lumbar_deg: 5.6 } });
+  ws.receive({ type: 'sensor_link', session_id: 'sid-9', connected: false, note: null });
+  assert.deepEqual(events.map((e) => e.type), ['session_ready', 'sensor_live', 'sensor_link']);
+  assert.equal(events[1].data.spine_lumbar_deg, 5.6);
+  assert.equal(s.sendDeviceCommand('sid-9', 'recalibrate'), true);
+  assert.deepEqual(ws.sent.at(-1), { schema_version: 1, type: 'device_command', session_id: 'sid-9', command: 'recalibrate' });
+});
+
+test('getSensorCode asks for a pairing code for this workout', async () => {
+  const f = fakeFetch(200, { code: 'ABCD-2345', expires_in_s: 600 });
+  assert.equal((await getSensorCode('http://x:8000/', 'T', 'sid-1', f.impl)).code, 'ABCD-2345');
+  assert.equal(f.calls[0].url, 'http://x:8000/api/workouts/sid-1/sensor-code');
+  assert.equal(f.calls[0].init.method, 'POST');
+  assert.equal(f.calls[0].init.headers.Authorization, 'Bearer T');
+  await assert.rejects(getSensorCode('http://x', 'T', 'sid-1', fakeFetch(409, { detail: 'workout is not active' }).impl), /409 workout is not active/);
+});
+
 test('close codes are passed on and readiness is lost (so frames stop)', () => {
   const { s, ws, closes } = socket();
   ws.open();
@@ -473,4 +495,154 @@ test('calibration prompts and status lines are described for the screen, samples
   assert.equal(describeWearableLine(baseLine()), null);
   assert.equal(describeWearableLine('=== Spine test ==='), '=== Spine test ===');
   assert.equal(describeWearableLine('  '), null);
+});
+
+// ---------------------------------------------------------------- Exercise screens (pure parts)
+
+/** 33 landmarks; open = arms above shoulders and feet wide, closed = arms down and feet together. */
+function jackPose(open, visibility = 1) {
+  const lm = Array.from({ length: 33 }, () => ({ x: 0.5, y: 0.5, z: 0, visibility }));
+  const set = (i, x, y) => (lm[i] = { x, y, z: 0, visibility });
+  set(11, 0.45, 0.3); set(12, 0.55, 0.3); // shoulders
+  set(23, 0.47, 0.55); set(24, 0.53, 0.55); // hips (width 0.06)
+  if (open) {
+    set(15, 0.4, 0.15); set(16, 0.6, 0.15); // wrists above the shoulders
+    set(27, 0.4, 0.95); set(28, 0.6, 0.95); // ankles 0.2 apart = 3.3x hip width
+  } else {
+    set(15, 0.44, 0.55); set(16, 0.56, 0.55);
+    set(27, 0.48, 0.95); set(28, 0.52, 0.95); // 0.04 apart
+  }
+  return lm;
+}
+
+test('jumping jacks: one rep per closed -> open -> closed, jitter and missing joints are ignored', async () => {
+  const { JumpingJackCounter, classifyJack } = await import('../exercise/jumping-jack.ts');
+  assert.equal(classifyJack(jackPose(true)), 'open');
+  assert.equal(classifyJack(jackPose(false)), 'closed');
+  assert.equal(classifyJack(jackPose(true, 0.2)), null); // not visible enough
+  assert.equal(classifyJack(null), null);
+
+  const c = new JumpingJackCounter();
+  let t = 0;
+  const feed = (open) => c.update(jackPose(open), (t += 300));
+  assert.equal(feed(true), false); // starting open: no rep until we have seen closed first
+  feed(false);
+  for (let i = 0; i < 5; i++) {
+    feed(true);
+    assert.equal(feed(false), true);
+  }
+  assert.equal(c.count, 5);
+  // flicker: open/closed within the minimum rep time does not count twice
+  c.update(jackPose(true), t + 10);
+  assert.equal(c.update(jackPose(false), t + 20), false);
+  assert.equal(c.count, 5);
+  // a lost frame in the middle doesn't break the rep
+  c.update(jackPose(true), (t += 500));
+  c.update(null, (t += 100));
+  assert.equal(c.update(jackPose(false), (t += 300)), true);
+  assert.equal(c.count, 6);
+});
+
+test('set summary: pace, tempo, depth steadiness, balance, not-counted and spine peaks', async () => {
+  const { summarizeSet, formatDuration } = await import('../exercise/summary.ts');
+  const rep = (min, dur, asym) => ({ min_angle_deg: min, joint: 'elbow', min_knee_angle_deg: null, descent_ms: 500, ascent_ms: 500, duration_ms: dur, max_asymmetry_deg: asym });
+  const s = summarizeSet({
+    reps: 10, durationMs: 60000,
+    repMetrics: [rep(90, 2000, 4), rep(90, 2000, 6), rep(90, 2000, null)],
+    rejected: 2,
+    spine: [{ spine_lumbar_deg: 10, imu_pitch_deg: 20 }, { spine_lumbar_deg: 30 }],
+  });
+  const by = Object.fromEntries(s.stats.map((x) => [x.key, x.value]));
+  assert.deepEqual(by, { pace: '10', tempo: '2.0s', depth: '100', balance: '5°', rejected: '2', lumbar: '30°', lean: '20°' });
+  // fewer than 3 reps: no depth steadiness; jumping jacks (no metrics): pace only
+  assert.deepEqual(summarizeSet({ reps: 4, durationMs: 30000, repMetrics: [], rejected: 0, spine: [] }).stats.map((x) => x.key), ['pace']);
+  assert.deepEqual(summarizeSet({ reps: 0, durationMs: 0, repMetrics: [], rejected: 0, spine: [] }).stats, []);
+  assert.equal(formatDuration(65000), '1:05');
+  assert.equal(formatDuration(-5), '0:00');
+});
+
+test('the Exercise screen offers push-ups, squats and jumping jacks, with the server slugs', async () => {
+  const { EXERCISES, exerciseInfo } = await import('../exercise/catalog.ts');
+  assert.deepEqual(EXERCISES.map((e) => e.slug), ['push-up', 'squat', 'jumping-jack']);
+  assert.equal(exerciseInfo('jumping-jack').counter, 'device');
+  assert.equal(exerciseInfo('squat').counter, 'server');
+  assert.equal(exerciseInfo('burpee'), null);
+});
+
+test('getStats sends the bearer token and the time zone offset', async () => {
+  const { getStats } = await import('./workout-client.ts');
+  const f = fakeFetch(200, { per_exercise: [{ exercise: 'push-up', workouts: 2, total_reps: 30, best_workout_reps: 20, last_workout_at: null }] });
+  const s = await getStats('http://x:8080/', 'T', f.impl);
+  assert.equal(s.per_exercise[0].best_workout_reps, 20);
+  assert.match(f.calls[0].url, /^http:\/\/x:8080\/api\/stats\?tz_offset_minutes=-?\d+$/);
+  assert.equal(f.calls[0].init.headers.Authorization, 'Bearer T');
+});
+
+test('getTrends asks for one exercise, optionally focused on the set just finished', async () => {
+  const { getTrends } = await import('./workout-client.ts');
+  const body = { exercise: 'squat', sets: 2, facts: [{ key: 'delta', big: '+2', small: 'more reps than your last set', tone: 'hype' }], headline: 'h', advice: 'a', source: 'agent' };
+  const f = fakeFetch(200, body);
+  assert.equal((await getTrends('http://x:8080/', 'T', 'squat', 'sid 1', f.impl)).facts[0].big, '+2');
+  assert.equal(f.calls[0].url, 'http://x:8080/api/trends/squat?session_id=sid%201');
+  assert.equal(f.calls[0].init.headers.Authorization, 'Bearer T');
+  const g = fakeFetch(200, body);
+  await getTrends('http://x', 'T', 'jumping-jack', undefined, g.impl);
+  assert.equal(g.calls[0].url, 'http://x/api/trends/jumping-jack');
+});
+
+test('saveDeviceReps posts the phone\'s count, and refusals surface as errors', async () => {
+  const { saveDeviceReps } = await import('./workout-client.ts');
+  const f = fakeFetch(204, null);
+  await saveDeviceReps('http://x', 'T', 'sid-1', 12, f.impl);
+  assert.equal(f.calls[0].url, 'http://x/api/workouts/sid-1/device-reps');
+  assert.equal(f.calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(f.calls[0].init.body), { reps: 12 });
+  await assert.rejects(saveDeviceReps('http://x', 'T', 's', 3, fakeFetch(409, { detail: 'the server counts this exercise itself' }).impl), /409/);
+});
+
+// ---------------------------------------------------------------- rep wave
+
+test('wave value: deeper joint angle = higher wave; jumping jacks use arms + feet', async () => {
+  const { waveValue, jackOpenness } = await import('../exercise/wave.ts');
+  const ang = (elbow, knee = null) => ({ left_elbow_angle_deg: elbow, right_elbow_angle_deg: null, left_knee_angle_deg: knee, right_knee_angle_deg: null, left_hip_angle_deg: null, right_hip_angle_deg: null, landmark_confidence: 1 });
+  assert.equal(waveValue('elbow', ang(175), null), 0);
+  assert.equal(waveValue('elbow', ang(70), null), 1);
+  assert.ok(Math.abs(waveValue('elbow', ang(122.5), null) - 0.5) < 1e-9);
+  assert.equal(waveValue('knee', ang(90, null), null), null); // no knee visible
+  assert.equal(waveValue('elbow', null, null), null);
+  const open = jackOpenness(jackPose(true));
+  const closed = jackOpenness(jackPose(false));
+  assert.ok(open > 0.7 && closed < 0.2, `${open} ${closed}`);
+  assert.equal(waveValue(null, null, jackPose(true)), open);
+  assert.equal(jackOpenness(jackPose(true, 0.2)), null);
+});
+
+test('rep bars: height = depth, width = time, orange for attempts that did not count, cap = back bend', async () => {
+  const { repBars, barsFromServer } = await import('../exercise/wave.ts');
+  const bars = repBars([
+    { counted: true, depthDeg: 70, durationMs: 1000, backDeg: 20 },
+    { counted: true, depthDeg: 122.5, durationMs: 2000, backDeg: null },
+    { counted: false, depthDeg: 160, durationMs: 500, backDeg: null },
+    { counted: true, depthDeg: null, durationMs: null, backDeg: null },
+  ]);
+  assert.deepEqual(bars.map((b) => b.kind), ['counted', 'counted', 'rejected', 'counted']);
+  assert.equal(bars[0].h, 1);
+  assert.ok(Math.abs(bars[1].h - 0.5) < 1e-9);
+  assert.equal(bars[1].w, 1); // the slowest rep is the widest
+  assert.equal(bars[0].w, 0.5);
+  assert.equal(bars[2].w, 0.35); // never thinner than this
+  assert.equal(bars[0].cap, 0.5);
+  assert.equal(bars[1].cap, null);
+  assert.equal(bars[3].h, 0.7); // jumping jacks: steady height
+  assert.equal(barsFromServer([{ d: 70, t: 900 }]).length, 1);
+});
+
+test('fatigue note: slower and/or shallower last reps, sped up, steady, or nothing for short sets', async () => {
+  const { fatigueNote } = await import('../exercise/wave.ts');
+  const reps = (ts, ds) => ts.map((t, i) => ({ counted: true, durationMs: t, depthDeg: ds[i], backDeg: null }));
+  assert.equal(fatigueNote(reps([1000, 1000, 1000, 1000, 1300, 1300], [80, 80, 80, 80, 90, 90])), "Your last reps were 30% slower and 10° shallower: that's the fade.");
+  assert.equal(fatigueNote(reps([1000, 1000, 1100, 1100, 1300, 1300], [80, 80, 80, 80, 80, 80])), 'Your last reps were 30% slower than your first.');
+  assert.equal(fatigueNote(reps([1000, 1000, 1000, 1000, 800, 800], [80, 80, 80, 80, 80, 80])), 'You sped up: your last reps were 20% quicker.');
+  assert.equal(fatigueNote(reps([1000, 1000, 1000, 1000, 1000, 1000], [80, 80, 80, 80, 80, 80])), 'Steady from first rep to last.');
+  assert.equal(fatigueNote(reps([1000, 2000, 3000], [80, 90, 100])), null);
 });

@@ -58,6 +58,7 @@ server/
   app/sensor_simulation.py          simulated, labelled upper-back sensor data for tests/demo
   app/services/auth.py              Supabase token verification
   app/services/persistence.py       retryable database writes
+  app/services/sensor_pairing.py    one-time codes + bridge tokens pairing the laptop sensor bridge with a workout
   app/services/ingest.py            sensor buffer + batch writer to Tiger Data, clock anchoring
   app/services/timeseries.py        Tiger Data (TimescaleDB) client: the SECOND database
   app/services/analytics.py         SQL time-series analytics; coach_context.py merges both databases
@@ -154,7 +155,7 @@ Example outgoing feedback event:
 - `GET /api/workouts/{session_id}` — session metadata and summary, ownership checked.
 - `POST /api/workouts/{session_id}/finish` — finalize workout and persist summary.
 - `WS /ws/workouts/{session_id}` — authenticated live events (pose updates, possibly sensor updates, rep events, coaching feedback).
-- ESP32 data has no separate endpoint: the client relays `sensor_update` over the workout WebSocket (USB serial -> Web Serial on the `/pose` page).
+- ESP32 data reaches the server two ways: the laptop sensor bridge (`hardware/laptop/spine_bridge.py`, `WS /ws/sensors`, paired by a one-time code from `POST /api/workouts/{id}/sensor-code`; the server forwards readings to the app as `sensor_live`), or the app relaying `sensor_update` over the workout WebSocket (Web Serial on the `/pose` page, desktop browsers only).
 - Document requests, responses, auth method, errors, and reconnection behavior.
 
 ## Exercise analysis requirements
@@ -215,7 +216,7 @@ Agent guardrails:
 ## Open team decisions
 
 - Is MediaPipe running in the React browser or Python service? (Browser recommended.)
-- How does ESP32 connect? **Decided for MVP: USB serial.** The `/pose` page reads it with Web Serial and relays `sensor_update` over the workout socket. BLE may come later.
+- How does ESP32 connect? **Decided for MVP: ESP-NOW to a base station on USB serial at the laptop.** The laptop bridge streams it to the backend, which shows it in the app (phones included). Web Serial on the `/pose` page remains for desktop browsers. BLE may come later.
 - Which LLM provider and model does the team have access to?
 - Will demo accounts use Supabase Auth or an isolated, explicitly secured test identity?
 - Which camera angles, exercises, and sensor attachment locations can be reliably demonstrated?

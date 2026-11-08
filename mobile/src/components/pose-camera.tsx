@@ -22,7 +22,7 @@ const STATUS_TEXT: Record<CameraState, string> = {
 };
 
 /** iOS/Android: MediaPipe in a WebView (works in Expo Go). Same props as pose-camera.web.tsx. */
-export function PoseCamera({ onFrame }: PoseCameraProps) {
+export function PoseCamera({ onFrame, tint }: PoseCameraProps) {
   const html = useMemo(() => buildPoseWebViewHtml(), []);
   const [state, setState] = useState<CameraState>('off');
   const [delegate, setDelegate] = useState<string | null>(null);
@@ -102,8 +102,8 @@ export function PoseCamera({ onFrame }: PoseCameraProps) {
       <Pressable
         accessibilityRole="button"
         onPress={on ? () => setState('off') : start}
-        style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
-        <ThemedText type="smallBold" style={styles.buttonText}>
+        style={({ pressed }) => [styles.button, tint && { backgroundColor: tint.button, borderRadius: 999 }, pressed && styles.pressed]}>
+        <ThemedText type="smallBold" style={[styles.buttonText, tint && { color: tint.text }]}>
           {on ? 'Stop camera' : 'Start camera'}
         </ThemedText>
       </Pressable>
