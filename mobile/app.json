@@ -23,6 +23,8 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
+      "name": "GRIT",
+      "shortName": "GRIT",
       "output": "server",
       "favicon": "./assets/images/favicon.png"
     },

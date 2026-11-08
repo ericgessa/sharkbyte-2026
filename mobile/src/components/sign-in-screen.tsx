@@ -1,3 +1,4 @@
+import { Image } from 'expo-image';
 import { useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, StyleSheet, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -51,6 +52,7 @@ export function SignInScreen() {
               </>
             ) : (
               <>
+                <Image source={require('@/assets/images/grit-logo.png')} style={styles.logo} contentFit="contain" accessibilityLabel="GRIT" />
                 <ThemedText type="subtitle">Sign in</ThemedText>
                 <TextInput
                   style={inputStyle}
@@ -116,6 +118,7 @@ function Btn({ label, onPress, disabled, busy, testID }: { label: string; onPres
 const styles = StyleSheet.create({
   container: { flex: 1, flexDirection: 'row', justifyContent: 'center' },
   safeArea: { flex: 1, maxWidth: MaxContentWidth, padding: Spacing.three, justifyContent: 'center' },
+  logo: { width: 72, height: 72, alignSelf: 'center' },
   card: { gap: Spacing.three, padding: Spacing.four, borderRadius: 16, borderWidth: 1, borderColor: G.line },
   input: { borderWidth: 1, borderRadius: 12, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three, fontSize: 16 },
   button: { backgroundColor: G.green, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },

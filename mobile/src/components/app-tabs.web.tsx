@@ -6,6 +6,7 @@ import {
   TabTriggerSlotProps,
   TabListProps,
 } from 'expo-router/ui';
+import { Image } from 'expo-image';
 import { Link, router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, View, StyleSheet } from 'react-native';
@@ -51,6 +52,7 @@ export function CustomTabList(props: TabListProps) {
     <View {...props} style={styles.tabListContainer}>
       <View style={styles.innerContainer}>
         <Pressable onPress={() => router.navigate('/')} accessibilityRole="link" style={styles.brand}>
+          <Image source={require('@/assets/images/grit-logo.png')} style={styles.logo} contentFit="contain" accessibilityIgnoresInvertColors />
           <Text style={styles.brandText}>GRIT</Text>
         </Pressable>
 
@@ -109,6 +111,13 @@ const styles = StyleSheet.create({
   },
   brand: {
     marginRight: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  logo: {
+    width: 34,
+    height: 34,
   },
   brandText: {
     color: G.text,

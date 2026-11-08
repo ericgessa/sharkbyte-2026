@@ -1,4 +1,5 @@
 import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
+import Head from 'expo-router/head';
 import * as SplashScreen from 'expo-splash-screen';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
@@ -17,6 +18,10 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={GritTheme}>
       <SessionProvider>
+        {/* Browser tab title on every page (web only; no-op on native). The first paint uses app.json web.name. */}
+        <Head>
+          <title>GRIT</title>
+        </Head>
         <AnimatedSplashOverlay />
         <RootNavigator />
       </SessionProvider>
