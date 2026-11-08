@@ -24,7 +24,7 @@ export type WorkoutDetail = {
     max_asymmetry_deg?: number | null;
     avg_rep_duration_ms?: number | null;
   };
-  reps: { rep_number: number; metrics: { min_angle_deg?: number; duration_ms?: number; joint?: string }; created_at: string }[];
+  reps: { rep_number: number; metrics: { min_angle_deg?: number; duration_ms?: number; joint?: string; started_at?: string; ended_at?: string }; created_at: string }[];
   coaching_events: { rep_number: number | null; issue_code: string | null; message: string; action: string | null; created_at: string }[];
 };
 
