@@ -9,6 +9,17 @@ import { parseServerEvent, PoseStreamer } from './protocol.ts';
 import { simulatedPushUpFrames, simulatedSquatFrames } from './simulate.ts';
 import { describeWearableLine, LineSplitter, parseWearableLine, SensorStreamer } from './wearable.ts';
 import { createWorkout, finishWorkout, getCoachReport, toWsUrl, WorkoutSocket } from './workout-client.ts';
+import {
+  compactNumber,
+  exerciseNoun,
+  fastestRace,
+  formatDuration,
+  getProgress,
+  localTzOffsetMinutes,
+  shortWeekLabel,
+  streakHint,
+} from './progress.ts';
+import { dayLabel, deleteWorkout, exerciseTitle, getWorkoutDetail, groupByDay, listWorkouts, noteKind, workoutLength } from './history.ts';
 
 const near = (a, b, eps = 0.06) => assert.ok(Math.abs(a - b) <= eps, `${a} is not within ${eps} of ${b}`);
 
@@ -455,4 +466,118 @@ test('calibration prompts and status lines are described for the screen, samples
   assert.equal(describeWearableLine(baseLine()), null);
   assert.equal(describeWearableLine('=== Spine test ==='), '=== Spine test ===');
   assert.equal(describeWearableLine('  '), null);
+});
+
+// ---------------------------------------------------------------- progress (GET /api/stats)
+
+test('getProgress sends the token, the time zone and the week count', async () => {
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true, status: 200, json: async () => ({ streak: { current_days: 3, longest_days: 5 } }) };
+  };
+  const p = await getProgress('http://x:8000/', 'T', { weeks: 8, tzOffsetMinutes: -300 }, impl);
+  assert.equal(p.streak.current_days, 3);
+  assert.equal(calls[0].url, 'http://x:8000/api/stats?tz_offset_minutes=-300&weeks=8');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer T');
+  await assert.rejects(getProgress('http://x', 't', {}, async () => ({ ok: false, status: 401, json: async () => ({}) })), /401/);
+});
+
+test('the time zone offset is minutes EAST of UTC (the opposite of getTimezoneOffset)', () => {
+  assert.equal(localTzOffsetMinutes({ getTimezoneOffset: () => 300 }), -300); // US Eastern
+  assert.equal(localTzOffsetMinutes({ getTimezoneOffset: () => -60 }), 60);
+});
+
+test('numbers and durations are compact', () => {
+  assert.equal(compactNumber(0), '0');
+  assert.equal(compactNumber(1284), '1,284');
+  assert.equal(compactNumber(12_900), '12.9K');
+  assert.equal(compactNumber(250_000), '250K');
+  assert.equal(compactNumber(1_200_000), '1.2M');
+  assert.equal(formatDuration(0), '0m');
+  assert.equal(formatDuration(2700), '45m');
+  assert.equal(formatDuration(12_000), '3h 20m');
+  assert.equal(formatDuration(7200), '2h');
+});
+
+test('exercise names pluralise sensibly', () => {
+  assert.equal(exerciseNoun('squat', 24), 'squats');
+  assert.equal(exerciseNoun('push-up', 1), 'push-up');
+  assert.equal(exerciseNoun('push-up', 10), 'push-ups');
+});
+
+test('the streak hint says what to do today', () => {
+  const now = new Date(2026, 10, 8, 18, 0); // Nov 8, local time
+  const today = new Date(2026, 10, 8, 9, 0).toISOString();
+  const yesterday = new Date(2026, 10, 7, 9, 0).toISOString();
+  const p = (current, longest, workouts, last) => ({ streak: { current_days: current, longest_days: longest }, totals: { workouts, last_workout_at: last } });
+  assert.match(streakHint(p(0, 0, 0, null), now), /first workout/);
+  assert.match(streakHint(p(3, 5, 9, today), now), /Done for today. See you tomorrow/);
+  assert.match(streakHint(p(5, 5, 9, today), now), /best streak yet/);
+  assert.match(streakHint(p(3, 5, 9, yesterday), now), /keep it going/);
+  assert.match(streakHint(p(0, 4, 9, '2026-10-01T12:00:00Z'), now), /best was 4 days/);
+});
+
+test('week labels do not shift with the time zone', () => {
+  assert.equal(shortWeekLabel('2026-11-02'), 'Nov 2');
+});
+
+test('the fastest Rep Racer finish is picked and worded', () => {
+  assert.equal(fastestRace(null), null);
+  assert.equal(fastestRace({ races: 0, finished: 0, fastest: [] }), null);
+  const games = { races: 3, finished: 2, fastest: [
+    { exercise: 'squat', target_reps: 10, duration_ms: 31_000, mode: 'solo', achieved_at: null },
+    { exercise: 'push-up', target_reps: 10, duration_ms: 24_340, mode: 'solo', achieved_at: null },
+  ] };
+  assert.equal(fastestRace(games), '10 push-ups in 24.3 s');
+});
+
+// ---------------------------------------------------------------- workout history
+
+test('history calls hit the right endpoints with the token', async () => {
+  const calls = [];
+  const ok = (body) => async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true, status: 200, json: async () => body };
+  };
+  await listWorkouts('http://x:8000/', 'T', 50, ok([]));
+  await getWorkoutDetail('http://x:8000', 'T', 'sid-1', ok({}));
+  await deleteWorkout('http://x:8000', 'T', 'sid-1', ok(null));
+  assert.equal(calls[0].url, 'http://x:8000/api/workouts?limit=50');
+  assert.equal(calls[1].url, 'http://x:8000/api/workouts/sid-1/summary');
+  assert.equal(calls[2].url, 'http://x:8000/api/workouts/sid-1');
+  assert.equal(calls[2].init.method, 'DELETE');
+  assert.ok(calls.every((c) => c.init.headers.Authorization === 'Bearer T'));
+});
+
+test('a failed delete keeps the server\'s reason (503 = nothing was deleted, try again)', async () => {
+  const res = { ok: false, status: 503, json: async () => ({ detail: 'could not delete the sensor data right now' }) };
+  await assert.rejects(deleteWorkout('http://x', 't', 'sid', async () => res), /^Error: 503 could not delete/);
+});
+
+test('days read Today / Yesterday / a date, in the user\'s own time zone', () => {
+  const now = new Date(2026, 10, 8, 20, 0);
+  assert.equal(dayLabel(new Date(2026, 10, 8, 7, 0).toISOString(), now), 'Today');
+  assert.equal(dayLabel(new Date(2026, 10, 7, 23, 30).toISOString(), now), 'Yesterday');
+  assert.equal(dayLabel(new Date(2026, 10, 3, 12, 0).toISOString(), now), 'Tue, Nov 3');
+  assert.match(dayLabel(new Date(2025, 11, 30, 12, 0).toISOString(), now), /2025/);
+});
+
+test('the list is grouped by day, newest first, order kept', () => {
+  const now = new Date(2026, 10, 8, 20, 0);
+  const at = (d, h) => ({ started_at: new Date(2026, 10, d, h).toISOString(), id: `${d}-${h}` });
+  const groups = groupByDay([at(8, 18), at(8, 9), at(7, 12), at(3, 10)], now);
+  assert.deepEqual(groups.map((g) => g.day), ['Today', 'Yesterday', 'Tue, Nov 3']);
+  assert.deepEqual(groups[0].items.map((i) => i.id), ['8-18', '8-9']);
+});
+
+test('workout length and names read naturally', () => {
+  assert.equal(workoutLength('2026-11-08T10:00:00Z', null), null);
+  assert.equal(workoutLength('2026-11-08T10:00:00Z', '2026-11-08T10:00:45Z'), '45 s');
+  assert.equal(workoutLength('2026-11-08T10:00:00Z', '2026-11-08T10:12:10Z'), '12 min');
+  assert.equal(workoutLength('2026-11-08T10:00:00Z', '2026-11-08T11:05:00Z'), '1 h 5 min');
+  assert.equal(exerciseTitle('push-up'), 'Push-up');
+  assert.equal(noteKind('rep_rejected'), 'not counted');
+  assert.equal(noteKind('recommend_rest'), 'rest');
+  assert.equal(noteKind('send_feedback'), 'cue');
 });

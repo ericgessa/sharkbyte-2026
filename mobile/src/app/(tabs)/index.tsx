@@ -3,6 +3,7 @@ import { Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } fro
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Btn } from '@/components/games/ui';
+import { ProgressPanel } from '@/components/progress-panel';
 import { BottomTabInset } from '@/constants/theme';
 import { G } from '@/games/theme';
 
@@ -53,6 +54,8 @@ export default function HomeScreen() {
           </View>
           <WorkoutPreview style={wide ? { flex: 1, maxWidth: 440 } : undefined} />
         </View>
+
+        <ProgressPanel wide={wide} />
 
         <View style={s.divider} />
 

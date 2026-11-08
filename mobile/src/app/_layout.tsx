@@ -35,6 +35,7 @@ function RootNavigator() {
       <Stack.Protected guard={session !== null}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="pose" options={{ title: 'Pose lab', headerTitleStyle: { fontWeight: '800' } }} />
+        <Stack.Screen name="workout/[id]" options={{ title: 'Workout', headerTitleStyle: { fontWeight: '800' } }} />
         <Stack.Screen name="games" options={{ headerShown: false }} />
         <Stack.Screen name="games/racer" options={{ headerShown: false }} />
       </Stack.Protected>
