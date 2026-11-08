@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import games as games_api
+from app.api import stats as stats_api
 from app.api import routes, websocket
 from app.services.agent import agent_from_env
 from app.services.auth import SupabaseAuth
@@ -114,6 +115,7 @@ def create_app(
 
     app.include_router(routes.router)
     app.include_router(games_api.router)
+    app.include_router(stats_api.router)
     app.include_router(websocket.router)
     return app
 
