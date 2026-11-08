@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { G } from '@/games/theme';
 import { computePoseAngles } from '@/pose/angles';
 import { SKELETON } from '@/pose/skeleton';
 import { usePoseDetector } from '@/pose/use-pose-detector';
@@ -122,7 +123,7 @@ export function PoseCamera({ onFrame }: PoseCameraProps) {
             const px = (i: number) => [landmarks![i].x * canvas.width, landmarks![i].y * canvas.height] as const;
             const seen = (i: number) => (landmarks![i].visibility ?? 0) >= 0.5;
             ctx.lineWidth = 3;
-            ctx.strokeStyle = '#3c87f7';
+            ctx.strokeStyle = G.green;
             for (const [a, b] of SKELETON) {
               if (!seen(a) || !seen(b)) continue;
               ctx.beginPath();
@@ -199,8 +200,8 @@ export function PoseCamera({ onFrame }: PoseCameraProps) {
 
 const styles = StyleSheet.create({
   wrap: { gap: Spacing.two, alignItems: 'flex-start', alignSelf: 'stretch' },
-  button: { backgroundColor: '#3c87f7', borderRadius: Spacing.two, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three },
-  buttonText: { color: '#ffffff' },
+  button: { backgroundColor: G.green, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 18 },
+  buttonText: { color: G.greenInk },
   pressed: { opacity: 0.7 },
-  error: { color: '#d93025' },
+  error: { color: G.red },
 });

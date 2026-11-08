@@ -10,6 +10,11 @@ from app.services.rep_counter import (
 from app.simulation import squat_messages
 
 
+# The bare state machine, without the glitch guard (no smoothing, no top hold, no minimum attempt length), for tests
+# that step it a few hand-written frames at a time. The glitch guard has its own tests in test_form_iq.py.
+RAW = dict(smoothing_frames=1, top_hold_ms=0, glitch_ms=0)
+
+
 def sample(seq, ts, left=170.0, right=None, conf=0.95):
     return PoseSample(seq, ts, conf, left, left if right is None else right)
 
@@ -111,7 +116,7 @@ def test_single_visible_knee_still_counts_and_has_no_asymmetry():
 
 
 def test_session_starting_mid_squat_does_not_count_until_standing_seen():
-    c = SquatRepCounter()
+    c = SquatRepCounter(config=SquatConfig(**RAW))
     # Begin at the bottom and stand up: must not produce a rep.
     for i, angle in enumerate([90, 100, 120, 140, 165]):
         assert c.update(sample(i, i * 100, angle)).rep is None
@@ -119,7 +124,7 @@ def test_session_starting_mid_squat_does_not_count_until_standing_seen():
 
 
 def test_tracking_gap_mid_rep_aborts_and_disarms():
-    c = SquatRepCounter(config=SquatConfig(max_gap_ms=1000))
+    c = SquatRepCounter(config=SquatConfig(max_gap_ms=1000, **RAW))
     c.update(sample(0, 0, 170))
     c.update(sample(1, 100, 140))
     c.update(sample(2, 200, 100))
@@ -130,7 +135,7 @@ def test_tracking_gap_mid_rep_aborts_and_disarms():
 
 
 def test_bounce_at_bottom_is_one_rep():
-    c = SquatRepCounter()
+    c = SquatRepCounter(config=SquatConfig(**RAW))
     angles = [170, 140, 100, 100, 125, 105, 100, 125, 150, 165, 170]
     reps = [
         r.rep for i, a in enumerate(angles) if (r := c.update(sample(i, i * 250, a))).rep
@@ -139,7 +144,7 @@ def test_bounce_at_bottom_is_one_rep():
 
 
 def test_reset_tracking_discards_partial_rep_and_requires_standing_again():
-    c = SquatRepCounter()
+    c = SquatRepCounter(config=SquatConfig(**RAW))
     for i, a in enumerate([170, 140, 100]):
         c.update(sample(i, i * 300, a))
     assert c.phase is SquatPhase.BOTTOM

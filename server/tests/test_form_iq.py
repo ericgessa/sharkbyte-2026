@@ -57,9 +57,92 @@ def test_a_full_rep_counts_and_is_not_rejected():
 
 
 def test_a_too_fast_rep_is_rejected():
-    results = _run(SquatRepCounter(), [170] * 10 + _dip(170, 85, frames=12) + [170] * 10, step_ms=33)  # ~0.4 s
+    results = _run(SquatRepCounter(), [170] * 10 + _dip(170, 85, frames=18) + [170] * 10, step_ms=33)  # ~0.6 s
     (rejected,) = [r.rejected for r in results if r.rejected]
-    assert rejected.reason is RejectReason.TOO_FAST and rejected.duration_ms < 800
+    assert rejected.reason is RejectReason.TOO_FAST and 300 <= rejected.duration_ms < 800
+
+
+# ---- glitch guard: pose tracking that returns nonsense for a few frames ------------------------------
+
+
+def _quiet(results):
+    return not any(r.rep or r.rejected for r in results)
+
+
+def test_one_and_two_frame_spikes_never_count_or_get_reported():
+    angles = [170] * 15
+    for spike in ([60], [55, 70], [20], [90, 85]):
+        angles += spike + [170] * 12
+    for counter, joint in ((SquatRepCounter(), "knee"), (PushUpRepCounter(), "elbow")):
+        assert _quiet(_run(counter, angles, joint=joint))
+
+
+def test_a_very_short_deep_dip_is_a_glitch_not_a_too_fast_rep():
+    """Deep enough to be a rep but over in ~0.2 s: no human does that, so it is ignored silently."""
+    c = SquatRepCounter()
+    assert _quiet(_run(c, [170] * 10 + _dip(170, 85, frames=6) + [170] * 10))
+    assert c.rep_count == 0
+
+
+def test_impossible_angles_are_ignored():
+    """Seen live: an elbow reading 11-18 deg in the middle of a push-up. Below 30 deg is not a real joint angle."""
+    c = PushUpRepCounter()
+    assert _quiet(_run(c, [170] * 10 + [15] * 8 + [170] * 10, joint="elbow"))
+    assert c.glitch_frames == 8
+
+
+def test_a_mistracked_side_is_not_followed():
+    """One elbow stays straight, the other reads deep for half a second: the sides disagree by far more than any real
+    asymmetry, so the counter keeps following the side that continues the motion."""
+    c = PushUpRepCounter()
+    results = []
+    for i in range(60):
+        left = 170.0
+        right = 70.0 if 20 <= i < 35 else 170.0
+        results.append(c.update(PoseSample(i, i * 33, 0.9, left_elbow_deg=left, right_elbow_deg=right)))
+    assert _quiet(results) and c.glitch_frames == 15
+
+
+def test_a_mistracked_side_is_not_reported_as_asymmetry():
+    c = PushUpRepCounter()
+    angles = [170] * 10 + _dip(170, 85) + [170] * 10
+    results = []
+    for i, a in enumerate(angles):
+        right = 20.0 if i == 30 else a  # one implausible frame on one side, mid-rep
+        results.append(c.update(PoseSample(i, i * 33, 0.9, left_elbow_deg=a, right_elbow_deg=right)))
+    (rep,) = [r.rep for r in results if r.rep]
+    assert rep.max_asymmetry_deg == 0.0
+
+
+def test_a_glitch_mid_rep_does_not_change_the_recorded_depth():
+    angles = [170] * 10 + _dip(170, 85) + [170] * 10
+    angles[28] = 40  # a single nonsense frame near the bottom
+    (rep,) = [r.rep for r in _run(SquatRepCounter(), angles) if r.rep]
+    assert rep.min_angle_deg == pytest.approx(85, abs=1)
+
+
+# ---- one attempt per descent ---------------------------------------------------------------------------
+
+
+def test_wobbling_around_the_top_is_one_attempt_not_several():
+    """A shallow dip, a brief flicker above the top threshold, then down again: ONE rejected attempt."""
+    wobble = [162, 158, 163, 157, 161, 159]  # under the 250 ms top hold
+    angles = [170] * 10 + _dip(170, 125)[:-8] + wobble + _dip(170, 125)[12:] + [170] * 12
+    rejected = [r.rejected for r in _run(SquatRepCounter(), angles) if r.rejected]
+    assert len(rejected) == 1 and rejected[0].reason is RejectReason.PARTIAL_RANGE
+
+
+def test_an_attempt_that_flickers_at_the_top_then_reaches_the_bottom_is_a_rep():
+    angles = [170] * 10 + _dip(170, 125)[:-8] + [162, 163, 162] + _dip(170, 85)[14:] + [170] * 12
+    results = _run(SquatRepCounter(), angles)
+    assert sum(1 for r in results if r.rep) == 1 and not any(r.rejected for r in results)
+
+
+def test_two_separate_shallow_attempts_are_two_rejections():
+    """Holding the top in between ends the first attempt, so a second shallow one is reported on its own."""
+    angles = [170] * 10 + _dip(170, 125) + [170] * 15 + _dip(170, 125) + [170] * 15
+    rejected = [r.rejected for r in _run(SquatRepCounter(), angles) if r.rejected]
+    assert len(rejected) == 2
 
 
 def test_a_partial_push_up_is_rejected_on_the_elbow():
