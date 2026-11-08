@@ -7,22 +7,27 @@ import '@/global.css';
 
 import { Platform } from 'react-native';
 
-export const Colors = {
-  light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
-  },
-  dark: {
-    text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
-    textSecondary: '#B0B4BA',
-  },
+import { G } from '@/games/theme';
+
+/**
+ * The whole app uses the GRIT Games look (charcoal + electric green, see src/games/theme.ts). It is dark-only by
+ * design, so light and dark mode share one palette.
+ */
+const grit = {
+  text: G.text,
+  background: G.bg,
+  backgroundElement: G.panel,
+  backgroundSelected: G.panelHi,
+  textSecondary: G.muted,
+  border: G.line,
+  accent: G.green, // primary buttons, links, section labels
+  accentInk: G.greenInk, // text on an accent background
+  danger: G.red,
+  warning: G.amber,
+  info: G.blue,
 } as const;
+
+export const Colors = { light: grit, dark: grit } as const;
 
 export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 

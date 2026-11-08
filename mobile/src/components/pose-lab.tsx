@@ -6,6 +6,7 @@ import { PoseCamera, type PoseFrameInfo } from '@/components/pose-camera';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
+import { G } from '@/games/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { computePoseAngles, type PoseAngles } from '@/pose/angles';
 import { detectOnImageUrl } from '@/pose/mediapipe';
@@ -303,7 +304,7 @@ export function PoseLab() {
     }
   };
 
-  const inputStyle = [styles.input, { color: theme.text, borderColor: theme.backgroundSelected, backgroundColor: theme.background }];
+  const inputStyle = [styles.input, { color: theme.text, borderColor: theme.border, backgroundColor: theme.background }];
   const live = phase === 'live';
 
   return (
@@ -351,7 +352,7 @@ export function PoseLab() {
             {cue && <ThemedText testID="lab-cue">Coach: {cue}</ThemedText>}
             {report && (
               <ThemedView type="backgroundSelected" style={styles.report} testID="lab-report">
-                <ThemedText type="smallBold">Coach report</ThemedText>
+                <ThemedText type="label">Coach report</ThemedText>
                 <ThemedText>{report === 'loading' ? 'Your coach is writing your report...' : report.summary}</ThemedText>
                 {report !== 'loading' && (
                   <ThemedText type="small" themeColor="textSecondary">
@@ -418,7 +419,7 @@ export function PoseLab() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <ThemedView type="backgroundElement" style={styles.section}>
-      <ThemedText type="smallBold">{title}</ThemedText>
+      <ThemedText type="label">{title}</ThemedText>
       {children}
     </ThemedView>
   );
@@ -432,7 +433,7 @@ function Btn({ label, onPress, disabled, danger, testID }: { label: string; onPr
       onPress={onPress}
       disabled={disabled}
       style={({ pressed }) => [styles.button, danger && styles.buttonDanger, disabled && styles.buttonDisabled, pressed && styles.pressed]}>
-      <ThemedText type="smallBold" style={styles.buttonText}>
+      <ThemedText type="smallBold" style={[styles.buttonText, danger && { color: G.red }]}>
         {label}
       </ThemedText>
     </Pressable>
@@ -443,15 +444,15 @@ const styles = StyleSheet.create({
   container: { flex: 1, flexDirection: 'row', justifyContent: 'center' },
   safeArea: { flex: 1, maxWidth: MaxContentWidth },
   scroll: { padding: Spacing.three, gap: Spacing.three },
-  section: { gap: Spacing.two, padding: Spacing.three, borderRadius: Spacing.three },
+  section: { gap: Spacing.two, padding: Spacing.three, borderRadius: 16, borderWidth: 1, borderColor: G.line },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
-  input: { borderWidth: 1, borderRadius: Spacing.two, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three, fontSize: 14 },
-  button: { backgroundColor: '#3c87f7', borderRadius: Spacing.two, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three },
-  buttonDanger: { backgroundColor: '#d93025' },
+  input: { borderWidth: 1, borderRadius: 12, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three, fontSize: 14 },
+  button: { backgroundColor: G.green, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 18 },
+  buttonDanger: { backgroundColor: 'transparent', borderWidth: 1, borderColor: G.red },
   buttonDisabled: { opacity: 0.4 },
-  buttonText: { color: '#ffffff' },
+  buttonText: { color: G.greenInk },
   pressed: { opacity: 0.7 },
-  error: { color: '#d93025' },
-  pass: { color: '#188038' },
-  report: { gap: Spacing.one, padding: Spacing.three, borderRadius: Spacing.two },
+  error: { color: G.red },
+  pass: { color: G.green },
+  report: { gap: Spacing.one, padding: Spacing.three, borderRadius: 12, borderWidth: 1, borderColor: G.green },
 });

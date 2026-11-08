@@ -6,6 +6,7 @@ import { useSession } from '@/components/session-provider';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
+import { G } from '@/games/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { signIn } from '@/utils/auth';
 
@@ -33,7 +34,7 @@ export function SignInScreen() {
     }
   };
 
-  const inputStyle = [styles.input, { color: theme.text, borderColor: theme.backgroundSelected, backgroundColor: theme.background }];
+  const inputStyle = [styles.input, { color: theme.text, borderColor: theme.border, backgroundColor: theme.background }];
 
   return (
     <ThemedView style={styles.container}>
@@ -102,7 +103,7 @@ function Btn({ label, onPress, disabled, busy, testID }: { label: string; onPres
       disabled={disabled || busy}
       style={({ pressed }) => [styles.button, (disabled || busy) && styles.buttonDisabled, pressed && styles.pressed]}>
       {busy ? (
-        <ActivityIndicator color="#ffffff" />
+        <ActivityIndicator color={G.greenInk} />
       ) : (
         <ThemedText type="smallBold" style={styles.buttonText}>
           {label}
@@ -115,11 +116,11 @@ function Btn({ label, onPress, disabled, busy, testID }: { label: string; onPres
 const styles = StyleSheet.create({
   container: { flex: 1, flexDirection: 'row', justifyContent: 'center' },
   safeArea: { flex: 1, maxWidth: MaxContentWidth, padding: Spacing.three, justifyContent: 'center' },
-  card: { gap: Spacing.three, padding: Spacing.four, borderRadius: Spacing.four },
-  input: { borderWidth: 1, borderRadius: Spacing.two, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three, fontSize: 16 },
-  button: { backgroundColor: '#3c87f7', borderRadius: Spacing.two, paddingVertical: Spacing.three, alignItems: 'center' },
+  card: { gap: Spacing.three, padding: Spacing.four, borderRadius: 16, borderWidth: 1, borderColor: G.line },
+  input: { borderWidth: 1, borderRadius: 12, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three, fontSize: 16 },
+  button: { backgroundColor: G.green, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   buttonDisabled: { opacity: 0.4 },
-  buttonText: { color: '#ffffff' },
+  buttonText: { color: G.greenInk },
   pressed: { opacity: 0.7 },
-  error: { color: '#d93025' },
+  error: { color: G.red },
 });
