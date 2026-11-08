@@ -2,8 +2,9 @@
 
     python -m scripts.check_coach_llm        (run from server/)
 
-Needs COACH_LLM_PROVIDER=gemini (or anthropic) and that vendor's key in server/.env (GEMINI_API_KEY, or
-ANTHROPIC_API_KEY). It may cost a small amount of real money (two short requests). Nothing is written to any database.
+Needs COACH_LLM_PROVIDER=gemini and GEMINI_API_KEY in server/.env. It may cost a small amount of real money (two
+short requests). Nothing is written to any database. The live server no longer
+words cues with the LLM (reporter-only); scripts/check_report_llm.py checks the end-of-workout report.
 
 It checks the one thing the offline tests cannot: that the real API accepts the requests this code sends
 (model id, schema-constrained JSON output) and that the replies pass the safety checks. A "FELL BACK"
@@ -16,15 +17,18 @@ import asyncio
 import sys
 import time
 
+from dotenv import load_dotenv
+
 from app.services.agent import agent_from_env, build_cue_context, rules_summary
 from app.services.coaching import CoachingDecision, MESSAGES
 from app.services.rep_counter import RepMetrics
 
 
 def main() -> int:
+    load_dotenv()  # server/.env (the app loads it via services/database.py, which this script doesn't import)
     agent = agent_from_env()
     if not agent.enabled:
-        print("The coach LLM is OFF. Set COACH_LLM_PROVIDER=gemini (or anthropic) and the matching API key in server/.env (see .env.example).")
+        print("The coach LLM is OFF. Set COACH_LLM_PROVIDER=gemini and GEMINI_API_KEY in server/.env (see .env.example).")
         return 2
 
     reps = [RepMetrics(i, d, 400, 400, 1700, 2.0) for i, d in enumerate([85, 85, 85, 98, 98], start=1)]

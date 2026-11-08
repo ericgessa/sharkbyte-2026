@@ -3,9 +3,8 @@
 Where it sits:
     sensor_update -> PostureTracker (finds reps in the torso-pitch signal, summarizes each one)
                   -> detect_issues (rules over the rep history)
-                  -> PostureCoach (rate limits; picks a templated message)
-                  -> later: Gemini rewords the message from the same ``evidence``; the template stays
-                     as the fallback when the model is slow, down, or returns something invalid.
+                  -> PostureCoach (rate limits; picks a templated message, sent as-is: live cues are deterministic)
+    Gemini only mentions what came up in the end-of-workout report (agent.py), never during the workout.
 
 It works from the IMU alone, so it does not need the camera rep counter.
 
@@ -55,6 +54,9 @@ class PostureConfig:
     excessive_lean_deg: float = 55.0  # peak pitch from vertical
     lean_increase_deg: float = 8.0  # peak pitch above the median of the first baseline_reps
     lateral_shift_deg: float = 5.0  # mean roll at the bottom
+    # Off until the wearable's roll sign is checked (hardware/README.md: "Not checked yet"). A wrong sign would name
+    # the wrong side, so the check stays silent rather than risk that.
+    lateral_shift_enabled: bool = False
     rounded_standing_deg: float = 15.0  # standing pitch from vertical
     baseline_reps: int = 3
     consecutive: int = 2  # an issue must show in this many reps in a row
@@ -247,7 +249,7 @@ def detect_issues(reps: list[RepPosture], config: PostureConfig | None = None) -
         )
 
     rolls = [r.bottom_roll_deg for r in recent]
-    if all(x is not None for x in rolls):
+    if cfg.lateral_shift_enabled and all(x is not None for x in rolls):
         if all(x >= cfg.lateral_shift_deg for x in rolls) or all(x <= -cfg.lateral_shift_deg for x in rolls):
             found.append(
                 Finding(

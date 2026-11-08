@@ -6,18 +6,20 @@ An AI gym coach built from three layers:
   joint angles such as knee angles.
 - **Rep engine (FastAPI):** the backend counts squat and push-up reps in real time from those angles and
   measures each one: depth, tempo, and left/right asymmetry. A rule-based coach gives feedback.
-- **AI layer (LLM, optional):** words that feedback in natural language and writes workout recaps.
-  The rep count and the decision to coach stay deterministic and never depend on the model. The
-  providers implemented are **Gemini** (the team's plan) and Anthropic's Claude, chosen with one setting
-  (see [`docs/AI_COACH.md`](docs/AI_COACH.md)). Neither has been run against a real key yet.
+- **Form IQ (deterministic):** attempts that don't reach the bottom (or are too quick) are not counted and the app
+  is told why (`rep_rejected`); the spine wearable's section angles judge each counted rep's back shape (sagging or
+  piked hips in push-ups, a rounding lower back in squats). See [`docs/form-iq.md`](docs/form-iq.md).
+- **AI layer (Gemini, optional): the reporter.** After the workout it writes a short report: what went well, what
+  came up, and one thing to focus on next time. Everything during the workout (counting, rejecting, cues) is
+  deterministic and never waits on the model (see [`docs/AI_COACH.md`](docs/AI_COACH.md)).
 
 Sensor input from an ESP32 is accepted by the backend (`sensor_update`) and stored; the firmware and
 sensor calibration are not built yet.
 
 > **Status:** the backend is built and tested against **simulated** data. Nothing has been validated with a
 > real camera or wearable yet, MediaPipe pose tracking exists **for the web only** (a developer page,
-> `/pose`; see `docs/frontend-integration.md` section 6; never tried with a live camera), the AI layer has
-> **never been run against a real model**, and the mobile app is otherwise still the Expo starter template.
+> `/pose`; see `docs/frontend-integration.md` section 6; never tried with a live camera), the end-of-workout report
+> has been run against real Gemini (on simulated workouts), and the mobile app is otherwise still the Expo starter template.
 
 ## Repository layout
 
@@ -38,7 +40,7 @@ sensor time-series and answers time-series questions. Both share the workout's `
  camera ─▶ MediaPipe Pose ─▶ knee angles ─ pose_update ─▶ FastAPI ── rep counter ── rule coach
  (planned)   (planned)                                      │  /ws/workouts/{session_id}      │
                                                             ▼                                  ▼ (optional)
- client ◀── rep_completed / coaching_feedback / tracking_status / error ◀─────────── LLM wording (off by default)
+ client ◀── rep_completed / rep_rejected / coaching_feedback / tracking_status / error   (all deterministic)
                                                             │
                                   reps + coaching events ──▶ Supabase      raw readings ──▶ Tiger Data
 ```
@@ -55,8 +57,10 @@ sensor time-series and answers time-series questions. Both share the workout's `
 6. Each counted rep produces a `rep_completed` message with `min_angle_deg` (and `joint`), `descent_ms`,
    `ascent_ms`, `duration_ms`, and `max_asymmetry_deg`, and is saved to Supabase.
 7. **Coaching:** when a problem repeats (for example depth dropping), the rule-based coach sends a
-   `coaching_feedback` cue and saves it. If the optional LLM layer is enabled, it may reword the cue
-   or stay quiet; if it fails, the rule message is used. A pain report always stops technique coaching.
+   `coaching_feedback` cue and saves it. Attempts that don't count get a `rep_rejected` with the reason. A pain
+   report always stops technique coaching.
+8. **Report:** after `POST /api/workouts/{id}/finish`, `GET /api/workouts/{id}/coach-summary` returns the
+   end-of-workout report, written by Gemini when it is enabled, with a deterministic version as the fallback.
 
 Full message schemas are in [`docs/event-contracts.md`](docs/event-contracts.md). The Pydantic models
 are in `server/app/schemas/events.py`. Change both together.
@@ -136,7 +140,7 @@ npx tsc --noEmit
   never ship it in the mobile app. Setup: [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md).
 - **Tiger Data** (`TIGERDATA_URL`, `TIGERDATA_PASSWORD`): optional; without it workouts work and sensor readings are
   simply not stored. Setup: [`TIGERDATA_SETUP.md`](TIGERDATA_SETUP.md).
-- **LLM coach** (`COACH_LLM_PROVIDER=gemini` + `GEMINI_API_KEY`, or `anthropic` + `ANTHROPIC_API_KEY`): optional and off by
+- **LLM coach** (`COACH_LLM_PROVIDER=gemini` + `GEMINI_API_KEY`): optional and off by
   default. Backend only, never in the mobile app. Details: [`docs/AI_COACH.md`](docs/AI_COACH.md).
 
 Run the tests:
@@ -148,20 +152,21 @@ Run the tests:
   analyzed** (reps counted, coached; thresholds untuned, simulated data only); the others are logged and their data
   recorded.
 - Workout history, per-workout summary, Tiger Data analytics, deleting a workout or a whole account from both databases.
-- An optional LLM coach layer with the rules as a guaranteed fallback. Built and tested offline; **not yet run
-  against a real model**.
+- An optional Gemini end-of-workout report with a deterministic report as the guaranteed fallback. Run against real
+  Gemini on simulated workouts (`python -m scripts.check_report_llm`); live cues never use an LLM.
 
 ## Roadmap
 
 - [x] Squat rep counting from knee angles over WebSocket
 - [x] Simulated pose stream for demos and tests
 - [x] Phase 2: Supabase auth (JWT validation, session ownership) and persistence
-- [x] `coaching_feedback` event (rule-based; optional LLM wording)
+- [x] `coaching_feedback` event (rule-based)
+- [x] Form IQ: `rep_rejected` for attempts that don't count; back-shape cues from the spine wearable
 - [x] ESP32 `sensor_update` messages accepted and stored (firmware and calibration still to do)
 - [x] CV layer in the browser: MediaPipe pose capture and joint-angle computation (`/pose`; tested on a still image and a simulated stream, not a live camera)
 - [ ] CV layer on phones (native camera + MediaPipe) and a real-camera accuracy check
 - [ ] Mobile live rep UI
-- [ ] AI layer verified against a real model (needs a Gemini API key; the Gemini provider is built but unrun)
+- [x] Gemini end-of-workout report verified against the real API (simulated workouts)
 - [ ] Rep counting and coaching for the exercises other than squat and push-up
 - [ ] Tune the squat and push-up thresholds on real recordings (they are untuned guesses)
 - [ ] `set_finished` event
@@ -175,7 +180,8 @@ python -m app.simulation --reps 5
 - [`docs/frontend-integration.md`](docs/frontend-integration.md): how the mobile app connects (start here if you build the app)
 - [`docs/event-contracts.md`](docs/event-contracts.md): every REST endpoint and WebSocket message
 - [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md), [`TIGERDATA_SETUP.md`](TIGERDATA_SETUP.md): setting up the databases (with what is verified and what is not)
-- [`docs/AI_COACH.md`](docs/AI_COACH.md): the LLM coach layer, its guardrails, and how to enable it
+- [`docs/AI_COACH.md`](docs/AI_COACH.md): the Gemini report, its guardrails, and how to enable it
+- [`docs/form-iq.md`](docs/form-iq.md): rejected reps and back-shape judging (deterministic)
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): running it somewhere other than a laptop
 - [`docs/adding-an-exercise.md`](docs/adding-an-exercise.md) and [`AGENTS.md`](AGENTS.md) (project spec and conventions)
 

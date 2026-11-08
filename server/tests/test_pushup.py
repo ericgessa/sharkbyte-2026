@@ -177,7 +177,7 @@ def test_squat_over_the_websocket_still_reports_the_original_knee_field_and_the_
         assert stats["deepest_knee_angle_deg"] == stats["deepest_angle_deg"]
 
 
-def test_pushup_cues_use_the_rules_even_when_the_llm_is_on_and_the_recap_does_not_call_it():
+def test_pushup_cues_use_the_rules_and_gemini_writes_the_end_of_workout_report():
     prov = FakeProvider()
     store = InMemoryStore()
     with make_client(store, CoachAgent(prov)) as client:
@@ -194,8 +194,11 @@ def test_pushup_cues_use_the_rules_even_when_the_llm_is_on_and_the_recap_does_no
         assert wait_for(lambda: len(store.reps.get(sid, {})) == 5)
         client.post(f"/api/workouts/{sid}/finish", headers=ALICE)
         recap = client.get(f"/api/workouts/{sid}/coach-summary", headers=ALICE).json()
-    assert recap["source"] == "rules" and "5 reps" in recap["summary"]
-    assert prov.decide_calls == [] and prov.summarize_calls == []
+    # Reporter-only: no LLM during the workout, Gemini writes the report afterwards, told what was counted.
+    assert recap["source"] == "agent" and recap["summary"] == "You did great today."
+    assert prov.decide_calls == []
+    (ctx,) = prov.summarize_calls
+    assert ctx["exercise"] == "Push-up" and ctx["counted_joint"] == "elbow"
 
 
 def test_resuming_a_pushup_workout_continues_counting_from_the_saved_reps():

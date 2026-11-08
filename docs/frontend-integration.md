@@ -141,10 +141,21 @@ so don't show a live rep counter or promise coaching for them; show something li
 and pause work for every exercise. Don't try to count reps client-side and send them: the API has no way to accept
 them. A wrong exercise name is a 422 whose message lists the valid ones.
 
-**End-of-workout recap.** `GET /api/workouts/{id}/coach-summary` returns `{ summary, source }`: a few plain sentences
-about the workout, ready to show under the stats. `source` is `"agent"` when an LLM wrote it and `"rules"` for the
-deterministic version (either is fine to show as-is). Call it once when the workout ends and cache it client-side; it is
-limited to about 6 requests per minute.
+**End-of-workout report.** `GET /api/workouts/{id}/coach-summary` returns `{ summary, source }`: a short report
+(reps, the form issues and uncounted attempts that came up, and one thing to focus on next time), ready to show under
+the stats. `source` is `"agent"` when Gemini wrote it and `"rules"` for the deterministic version (either is fine to
+show as-is). With Gemini it can take **up to ~20 s**, so show the stats from `finish` first and fill the report in when
+it arrives:
+
+```ts
+const done = await api(`/api/workouts/${id}/finish`, { method: 'POST' })  // fast: reps saved
+showStats(done)
+setReport('Your coach is writing your report...')
+const { summary } = await api<{ summary: string }>(`/api/workouts/${id}/coach-summary`)
+setReport(summary)
+```
+
+Call it once when the workout ends and cache it client-side; it is limited to about 6 requests per minute.
 
 Screens you can build from the other read endpoints (response shapes in [event-contracts.md](event-contracts.md)):
 
@@ -177,7 +188,7 @@ function openWorkoutSocket(sessionId: string, accessToken: string, onEvent: (e: 
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data as string)
     if (e.type === 'session_ready') ready = true          // 2) only now start sending poses
-    onEvent(e)  // rep_completed | coaching_feedback | tracking_status | error
+    onEvent(e)  // rep_completed | rep_rejected | coaching_feedback | tracking_status | error
   }
 
   // 3) Send one per processed camera frame (<= ~30/s is plenty).
@@ -199,9 +210,10 @@ Rules that matter:
   of the two must be present. Don't guess angles for hidden joints.
 - `landmark_confidence` 0-1; below 0.6 the frame is ignored and you get one `tracking_status: lost`
   (then `recovered`). Use that to show "step back so we can see your legs".
-- Show `coaching_feedback.message` as-is (text and/or speech). It is rate-limited server-side. When the server's AI
-  coach is on, a cue can arrive a few seconds after its `rep_completed` (or not at all); don't wait for it before
-  updating the rep count.
+- Show `coaching_feedback.message` as-is (text and/or speech). It is rate-limited server-side and deterministic: it
+  arrives right after the `rep_completed` that triggered it (no LLM during the workout).
+- **`rep_rejected`** = an attempt that did NOT count (`reason`: `partial_range` or `too_fast`). Show its `message`
+  briefly ("That one didn't count: go a little lower...") and keep the rep counter as it is; `rep_count` is unchanged.
 - **ESP32 data:** if the phone talks to the wearable over Bluetooth, forward each sample over this same socket
   (no separate endpoint or credentials): `ws.send(JSON.stringify({ schema_version: 1, type: 'sensor_update',
   session_id: sessionId, device_id: 'esp32-01', sequence: n++, timestamp_ms: deviceMillis, data: { flex_raw, imu_pitch_deg } }))`.

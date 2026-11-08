@@ -307,9 +307,10 @@ async def coach_summary(session_id: UUID, request: Request, user_id: UserId) -> 
     context = await asyncio.to_thread(build_coach_context, state.store, state.tiger, session_id)
     exercise = for_stored_name((row.get("exercises") or {}).get("name", DEFAULT_EXERCISE))
     fallback = rules_summary(context, exercise.analysis_supported, exercise.display_name.lower(), exercise.joint)
-    if exercise.llm_supported:
-        text, source = await state.agent.summarize(context, fallback)
-    else:  # the LLM layer only knows knee wording so far: other exercises get the deterministic recap
+    if exercise.analysis_supported:  # Gemini reports on every analyzed exercise (it is told which joint was counted)
+        report = {**context, "exercise": exercise.display_name, "counted_joint": exercise.joint}
+        text, source = await state.agent.summarize(report, fallback)
+    else:  # only logged, nothing measured to report on: the deterministic "your workout was logged" text
         text, source = fallback, "rules"
     if row["status"] == "completed":  # an active workout's recap would go stale
         state.summary_cache[key] = (text, source)

@@ -130,6 +130,20 @@ class RepCompleted(_Strict):
     metrics: RepMetricsOut
 
 
+class RepRejected(_Strict):
+    """An attempt that was NOT counted, and why. ``rep_count`` is unchanged (the count the app already shows)."""
+
+    schema_version: Literal[1] = SCHEMA_VERSION
+    type: Literal["rep_rejected"] = "rep_rejected"
+    session_id: UUID
+    rep_count: int
+    reason: Literal["partial_range", "too_fast"]
+    message: str
+    min_angle_deg: float
+    joint: str
+    duration_ms: int
+
+
 class CoachingFeedback(_Strict):
     schema_version: Literal[1] = SCHEMA_VERSION
     type: Literal["coaching_feedback"] = "coaching_feedback"

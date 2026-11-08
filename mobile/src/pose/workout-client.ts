@@ -66,6 +66,26 @@ export async function finishWorkout(
   return (await res.json()) as { total_reps: number; status: string };
 }
 
+/** The end-of-workout report. `source` is "agent" when Gemini wrote it, "rules" for the deterministic fallback. */
+export type CoachReport = { summary: string; source: 'agent' | 'rules' };
+
+/**
+ * The end-of-workout report. Call once, after `finishWorkout`. With Gemini it can take up to ~20 s (the server falls
+ * back to the rules report on its own), so show the stats first. Limited to about 6 calls a minute (429).
+ */
+export async function getCoachReport(
+  apiUrl: string,
+  accessToken: string,
+  sessionId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CoachReport> {
+  const res = await fetchImpl(`${apiUrl.replace(/\/+$/, '')}/api/workouts/${sessionId}/coach-summary`, {
+    headers: authHeaders(accessToken),
+  });
+  if (!res.ok) throw await apiError(res);
+  return (await res.json()) as CoachReport;
+}
+
 export type SocketHandlers = {
   /** Every parsed server event (including `session_ready`). */
   onEvent: (event: ServerEvent) => void;

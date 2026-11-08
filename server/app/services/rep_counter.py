@@ -121,9 +121,27 @@ class RepMetrics:
         return self.min_angle_deg
 
 
+class RejectReason(str, Enum):
+    """Why an attempt was NOT counted (reported to the user as ``rep_rejected``)."""
+
+    PARTIAL_RANGE = "partial_range"  # went at least halfway down but never reached the bottom threshold
+    TOO_FAST = "too_fast"  # reached the bottom but the whole rep took less than min_rep_ms
+
+
+@dataclass(frozen=True)
+class RejectedRep:
+    reason: RejectReason
+    min_angle_deg: float  # the deepest the counted joint got during the attempt
+    duration_ms: int
+    start_ts_ms: int
+    end_ts_ms: int
+    joint: str = "knee"
+
+
 @dataclass(frozen=True)
 class StepResult:
     rep: RepMetrics | None = None
+    rejected: RejectedRep | None = None  # an attempt that ended without counting, with the reason
     dropped: DropReason | None = None
     tracking_changed: bool | None = None  # True = tracking lost, False = recovered
     phase: SquatPhase = SquatPhase.UNARMED
@@ -174,6 +192,7 @@ class SquatRepCounter:
     _stand_deg: float = field(default=0.0, repr=False)
     _descent_deg: float = field(default=0.0, repr=False)
     _settled: deque = field(default_factory=deque, repr=False)
+    _rejected: RejectedRep | None = field(default=None, repr=False)  # set by _advance, handed out by update
 
     def __post_init__(self) -> None:
         self._stand_deg = self.config.standing_deg
@@ -235,7 +254,8 @@ class SquatRepCounter:
             return StepResult(phase=self.phase, tracking_changed=changed)
 
         rep = self._advance(angle, sample)
-        return StepResult(rep=rep, phase=self.phase, tracking_changed=changed)
+        rejected, self._rejected = self._rejected, None
+        return StepResult(rep=rep, rejected=rejected, phase=self.phase, tracking_changed=changed)
 
     # ------------------------------------------------------------------ internals
 
@@ -281,6 +301,7 @@ class SquatRepCounter:
                 self.phase = SquatPhase.BOTTOM
                 rep.bottom_ts = ts
             elif angle >= self._stand_deg:
+                self._reject_partial(rep, ts)
                 self._abort()
         elif self.phase is SquatPhase.BOTTOM:
             if angle > cfg.bottom_exit_deg:
@@ -323,6 +344,17 @@ class SquatRepCounter:
             diff = abs(left - right)
             rep.max_asymmetry = diff if rep.max_asymmetry is None else max(rep.max_asymmetry, diff)
 
+    def _reject_partial(self, rep: _RepInProgress, ts: int) -> None:
+        """Report a partial rep only if it was a real attempt: at least halfway from the descent threshold to the
+        bottom threshold. A shallower dip (a shift of weight, camera jitter) is ignored silently, as before."""
+        cfg = self.config
+        halfway = self._descent_deg - (self._descent_deg - cfg.bottom_deg) / 2
+        if rep.min_angle <= halfway:
+            self._rejected = RejectedRep(
+                RejectReason.PARTIAL_RANGE, round(rep.min_angle, 1), ts - rep.start_ts, rep.start_ts, ts, cfg.joint
+            )
+            logger.info("rep not counted: partial range (deepest %.1f deg, bottom is %.1f)", rep.min_angle, cfg.bottom_deg)
+
     def _abort(self) -> None:
         self.aborted_attempts += 1
         self._rep = None
@@ -337,6 +369,9 @@ class SquatRepCounter:
 
         if duration < self.config.min_rep_ms:
             self.aborted_attempts += 1
+            self._rejected = RejectedRep(
+                RejectReason.TOO_FAST, round(rep.min_angle, 1), duration, rep.start_ts, ts, self.config.joint
+            )
             logger.info("rep discarded: %d ms is faster than min_rep_ms", duration)
             return None
 

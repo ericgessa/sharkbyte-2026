@@ -53,7 +53,9 @@ server/
   app/services/games_db.py          Supabase access for game results and finished races
   app/simulation.py                 simulated pose data for tests/demo
   app/services/coaching.py          rule-based coach (always the fallback)
-  app/services/agent.py             optional LLM layer on top of the rules: guardrails, fallbacks, Anthropic provider (docs/AI_COACH.md)
+  app/services/agent.py             optional LLM layer on top of the rules: guardrails, fallbacks, Gemini provider (docs/AI_COACH.md)
+  app/services/posture.py           upper-back IMU posture rules; cues go through agent.py (docs/posture-coach.md)
+  app/sensor_simulation.py          simulated, labelled upper-back sensor data for tests/demo
   app/services/auth.py              Supabase token verification
   app/services/persistence.py       retryable database writes
   app/services/ingest.py            sensor buffer + batch writer to Tiger Data, clock anchoring

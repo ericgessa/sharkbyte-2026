@@ -41,12 +41,23 @@ export type ServerEvent =
       coaching_enabled: boolean;
     }
   | { type: 'rep_completed'; session_id: string; rep_count: number; metrics: RepMetrics }
+  | {
+      /** An attempt that did NOT count, and why. `rep_count` is unchanged. Show `message` as-is. */
+      type: 'rep_rejected';
+      session_id: string;
+      rep_count: number;
+      reason: 'partial_range' | 'too_fast';
+      message: string;
+      min_angle_deg: number;
+      joint: string;
+      duration_ms: number;
+    }
   | { type: 'coaching_feedback'; session_id: string; rep_count: number; issue_code: string; message: string; source: 'rules' | 'agent' }
   | { type: 'tracking_status'; session_id: string; tracking: 'lost' | 'recovered' }
   | { type: 'session_state'; session_id: string; paused: boolean; coaching_enabled: boolean }
   | { type: 'error'; code: string; detail: string };
 
-const KNOWN = new Set(['session_ready', 'rep_completed', 'coaching_feedback', 'tracking_status', 'session_state', 'error']);
+const KNOWN = new Set(['session_ready', 'rep_completed', 'rep_rejected', 'coaching_feedback', 'tracking_status', 'session_state', 'error']);
 
 /** Parse one WebSocket text frame. Returns null for anything that is not a known server event. */
 export function parseServerEvent(raw: string): ServerEvent | null {

@@ -7,7 +7,7 @@ import { computePoseAngles, jointAngleDeg, LM } from './angles.ts';
 import { LIBRARY_URL, MEDIAPIPE_VERSION, MODEL_URL, WASM_BASE } from './mediapipe.web.ts';
 import { parseServerEvent, PoseStreamer } from './protocol.ts';
 import { simulatedPushUpFrames, simulatedSquatFrames } from './simulate.ts';
-import { createWorkout, finishWorkout, toWsUrl, WorkoutSocket } from './workout-client.ts';
+import { createWorkout, finishWorkout, getCoachReport, toWsUrl, WorkoutSocket } from './workout-client.ts';
 
 const near = (a, b, eps = 0.06) => assert.ok(Math.abs(a - b) <= eps, `${a} is not within ${eps} of ${b}`);
 
@@ -161,6 +161,7 @@ test('known server events parse; everything else is ignored safely', () => {
   assert.equal(rep.type, 'rep_completed');
   assert.equal(rep.rep_count, 2);
   assert.equal(parseServerEvent(JSON.stringify({ type: 'coaching_feedback', message: 'x' })).type, 'coaching_feedback');
+  assert.equal(parseServerEvent(JSON.stringify({ type: 'rep_rejected', reason: 'partial_range', message: 'x' })).type, 'rep_rejected');
   assert.equal(parseServerEvent('not json'), null);
   assert.equal(parseServerEvent('"a string"'), null);
   assert.equal(parseServerEvent('[1,2]'), null);
@@ -209,6 +210,15 @@ test('finishWorkout posts to the right path', async () => {
   const f = fakeFetch(200, { total_reps: 5, status: 'completed' });
   assert.equal((await finishWorkout('http://x:8000', 'T', 'sid-1', f.impl)).total_reps, 5);
   assert.equal(f.calls[0].url, 'http://x:8000/api/workouts/sid-1/finish');
+});
+
+test('getCoachReport GETs the report with the bearer token and passes errors on', async () => {
+  const f = fakeFetch(200, { summary: 'Nice set.', source: 'agent' });
+  assert.deepEqual(await getCoachReport('http://x:8000/', 'T', 'sid-1', f.impl), { summary: 'Nice set.', source: 'agent' });
+  assert.equal(f.calls[0].url, 'http://x:8000/api/workouts/sid-1/coach-summary');
+  assert.equal(f.calls[0].init.method, undefined); // GET
+  assert.equal(f.calls[0].init.headers.Authorization, 'Bearer T');
+  await assert.rejects(getCoachReport('http://x', 't', 'sid', fakeFetch(429, { detail: 'too many recap requests; slow down' }).impl), /^Error: 429 too many/);
 });
 
 // ---------------------------------------------------------------- WebSocket protocol
