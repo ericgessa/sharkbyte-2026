@@ -11,7 +11,7 @@ import { computePoseAngles, type PoseAngles } from '@/pose/angles';
 import { detectOnImageUrl } from '@/pose/mediapipe';
 import { PoseStreamer, type ServerEvent } from '@/pose/protocol';
 import { simulatedPushUpFrames, simulatedSquatFrames } from '@/pose/simulate';
-import { createWorkout, finishWorkout, WorkoutSocket, type CreatedWorkout } from '@/pose/workout-client';
+import { createWorkout, finishWorkout, getCoachReport, WorkoutSocket, type CoachReport, type CreatedWorkout } from '@/pose/workout-client';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken, signOut } from '@/utils/auth';
 
@@ -46,6 +46,8 @@ export function PoseLab() {
   const [reps, setReps] = useState(0);
   const [analysis, setAnalysis] = useState<boolean | null>(null);
   const [cue, setCue] = useState<string | null>(null);
+  // End-of-workout report: null = none yet, 'loading' while the coach writes it.
+  const [report, setReport] = useState<CoachReport | 'loading' | null>(null);
   const [tracking, setTracking] = useState<'ok' | 'lost'>('ok');
   const [log, setLog] = useState<string[]>([]);
   const [angles, setAngles] = useState<PoseAngles | null>(null);
@@ -113,6 +115,10 @@ export function PoseLab() {
         setReps(e.rep_count);
         note(`rep ${e.rep_count}: deepest ${e.metrics.min_angle_deg} deg (${e.metrics.joint}), ${e.metrics.duration_ms} ms`);
         break;
+      case 'rep_rejected':
+        setCue(e.message);
+        note(`not counted (${e.reason}): deepest ${e.min_angle_deg} deg (${e.joint}), ${e.duration_ms} ms`);
+        break;
       case 'coaching_feedback':
         setCue(e.message);
         note(`coach (${e.source}): ${e.message}`);
@@ -136,6 +142,7 @@ export function PoseLab() {
     setPhase('starting');
     setReps(0);
     setCue(null);
+    setReport(null);
     setLog([]);
     setTracking('ok');
     try {
@@ -162,9 +169,11 @@ export function PoseLab() {
     stopSimulation();
     const w = workoutRef.current;
     if (!w) return;
+    let finished = false;
     try {
       const r = await finishWorkout(getApiUrl(), await getAccessToken(), w.session_id);
       note(`finished: ${r.total_reps} reps saved`);
+      finished = true;
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -172,6 +181,20 @@ export function PoseLab() {
       socketRef.current = null;
       streamerRef.current = null;
       setPhase('finished');
+    }
+    if (finished) await loadReport(w.session_id);
+  };
+
+  /** The end-of-workout report (Gemini, or the rules fallback). Can take up to ~20 s; the stats are already shown. */
+  const loadReport = async (sessionId: string) => {
+    setReport('loading');
+    try {
+      const r = await getCoachReport(getApiUrl(), await getAccessToken(), sessionId);
+      setReport(r);
+      note(`report from ${r.source === 'agent' ? 'Gemini' : 'rules'}`);
+    } catch (e) {
+      setReport(null);
+      setError(`report: ${messageOf(e)}`);
     }
   };
 
@@ -255,6 +278,10 @@ export function PoseLab() {
 
       const done = await finishWorkout(apiUrl, accessToken, w.session_id);
       allOk = check(done.total_reps === 5, `finished: ${done.total_reps} reps saved`) && allOk;
+
+      add('waiting for the end-of-workout report (up to ~20 s with Gemini)...');
+      const r = await getCoachReport(apiUrl, accessToken, w.session_id);
+      allOk = check(r.summary.trim().length > 0, `report (${r.source === 'agent' ? 'Gemini' : 'rules'}): ${r.summary}`) && allOk;
     } catch (e) {
       allOk = check(false, messageOf(e));
     } finally {
@@ -322,6 +349,17 @@ export function PoseLab() {
               {analysis === false ? ' | exercise is logged only (no rep counting yet)' : ''}
             </ThemedText>
             {cue && <ThemedText testID="lab-cue">Coach: {cue}</ThemedText>}
+            {report && (
+              <ThemedView type="backgroundSelected" style={styles.report} testID="lab-report">
+                <ThemedText type="smallBold">Coach report</ThemedText>
+                <ThemedText>{report === 'loading' ? 'Your coach is writing your report...' : report.summary}</ThemedText>
+                {report !== 'loading' && (
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {report.source === 'agent' ? 'Written by Gemini' : 'Standard report (Gemini off or unavailable)'}
+                  </ThemedText>
+                )}
+              </ThemedView>
+            )}
             {log.map((line, i) => (
               <ThemedText key={`${i}-${line}`} type="code" themeColor="textSecondary">
                 {line}
@@ -415,4 +453,5 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.7 },
   error: { color: '#d93025' },
   pass: { color: '#188038' },
+  report: { gap: Spacing.one, padding: Spacing.three, borderRadius: Spacing.two },
 });
