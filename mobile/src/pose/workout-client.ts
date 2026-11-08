@@ -68,11 +68,19 @@ export async function finishWorkout(
 }
 
 /** The end-of-workout report. `source` is "agent" when Gemini wrote it, "rules" for the deterministic fallback. */
-export type CoachReport = { summary: string; source: 'agent' | 'rules' };
+export type CoachReport = {
+  summary: string;
+  source: 'agent' | 'rules';
+  /** true: this report is stored in Supabase (written once when the workout finished), so reopening it is instant. */
+  saved?: boolean;
+  /** When the saved report was written (ISO), or null if it is not saved. */
+  generated_at?: string | null;
+};
 
 /**
- * The end-of-workout report. Call once, after `finishWorkout`. With Gemini it can take up to ~20 s (the server falls
- * back to the rules report on its own), so show the stats first. Limited to about 6 calls a minute (429).
+ * The end-of-workout report. The server writes it once, when the workout finishes, and saves it, so after that this just
+ * returns the saved report. Right after `finishWorkout` it may still be being written (Gemini can take up to ~20 s; the
+ * server falls back to the rules report on its own), so show the stats first. Limited to about 6 calls a minute (429).
  */
 export async function getCoachReport(
   apiUrl: string,

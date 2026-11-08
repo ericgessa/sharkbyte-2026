@@ -22,6 +22,7 @@ from typing import Any
 from uuid import UUID
 
 from dotenv import load_dotenv
+from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
 from app.services.exercises import find as find_exercise
@@ -35,6 +36,18 @@ class DatabaseConfigError(RuntimeError):
 
 class DatabaseError(RuntimeError):
     """A query failed or returned something unexpected."""
+
+
+class ReportsNotSetUpError(RuntimeError):
+    """The ``workout_reports`` table does not exist in this Supabase project yet (apply the migration)."""
+
+    def __init__(self) -> None:
+        super().__init__("workout_reports table is missing: apply supabase/migrations/20261108000002_workout_reports.sql")
+
+
+def _reports_missing(exc: APIError) -> bool:
+    text = f"{getattr(exc, 'code', '')} {getattr(exc, 'message', '')}"
+    return "PGRST205" in text or "42P01" in text or "schema cache" in text or "does not exist" in text
 
 
 # ----------------------------------------------------------------- connection
@@ -353,6 +366,42 @@ class SupabaseStore:
 
     def count_repetitions(self, session_id: UUID) -> int:
         return count_repetitions(session_id, self.client)
+
+    # ---- the saved coach report (one per workout)
+
+    def get_report(self, session_id: UUID | str) -> dict[str, Any] | None:
+        """The saved report, or None if there is none yet (or the table has not been created: then nothing is saved)."""
+        try:
+            rows = _rows(
+                self.client.table("workout_reports")
+                .select("summary,source,model,created_at,updated_at")
+                .eq("session_id", str(session_id))
+                .limit(1)
+                .execute()
+            )
+        except APIError as exc:
+            if _reports_missing(exc):
+                return None
+            raise
+        return rows[0] if rows else None
+
+    def save_report(self, session_id: UUID | str, summary: str, source: str, model: str | None = None) -> None:
+        """Insert or replace the workout's report. The caller has already checked that the workout is the user's."""
+        try:
+            self.client.table("workout_reports").upsert(
+                {
+                    "session_id": str(session_id),
+                    "summary": summary,
+                    "source": source,
+                    "model": model,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                on_conflict="session_id",
+            ).execute()
+        except APIError as exc:
+            if _reports_missing(exc):
+                raise ReportsNotSetUpError() from exc
+            raise
 
     def finish_session(self, session: dict[str, Any], total_reps: int) -> dict[str, Any] | None:
         row = finish_workout_session(session, total_reps, self.client)
