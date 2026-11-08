@@ -7,6 +7,7 @@ import { Btn } from '@/components/games/ui';
 import { G } from '@/games/theme';
 import { dayLabel, deleteWorkout, exerciseTitle, getWorkoutDetail, noteKind, timeLabel, workoutLength, type WorkoutDetail } from '@/pose/history';
 import { getCoachReport, type CoachReport } from '@/pose/workout-client';
+import { WorkoutCharts } from '@/components/workout-charts';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken } from '@/utils/auth';
 
@@ -87,6 +88,8 @@ export function WorkoutDetailScreen({ id }: { id: string }) {
             {typeof report === 'object' && <Text style={s.caption}>{report.source === 'agent' ? 'Written by Gemini' : 'Standard report'}</Text>}
           </View>
         )}
+
+        {w.status === 'completed' && w.analysis_supported && <WorkoutCharts id={id} workout={w} reps={data.reps} joint={joint === 'elbow' ? 'elbow' : 'knee'} />}
 
         {data.coaching_events.length > 0 && (
           <View style={s.section}>

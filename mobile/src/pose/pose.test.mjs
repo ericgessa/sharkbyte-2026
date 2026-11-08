@@ -7,6 +7,7 @@ import { computePoseAngles, jointAngleDeg, LM } from './angles.ts';
 import { LIBRARY_URL, MEDIAPIPE_VERSION, MODEL_URL, WASM_BASE } from './mediapipe.web.ts';
 import { parseServerEvent, PoseStreamer } from './protocol.ts';
 import { simulatedPushUpFrames, simulatedSquatFrames } from './simulate.ts';
+import { bucketSecondsFor, buildChart, chartWindow, formatSeconds, getReadings, linePath, metricsToFetch, niceDomain, ticks } from './readings.ts';
 import { describeWearableLine, LineSplitter, parseWearableLine, SensorStreamer } from './wearable.ts';
 import { createWorkout, finishWorkout, getCoachReport, toWsUrl, WorkoutSocket } from './workout-client.ts';
 import {
@@ -580,4 +581,117 @@ test('workout length and names read naturally', () => {
   assert.equal(noteKind('rep_rejected'), 'not counted');
   assert.equal(noteKind('recommend_rest'), 'rest');
   assert.equal(noteKind('send_feedback'), 'cue');
+});
+
+// ---------------------------------------------------------------- "angle over time" from the stored readings (Tiger Data)
+
+const T0 = '2026-11-08T12:00:00.000Z';
+const at = (sec) => new Date(Date.parse(T0) + sec * 1000).toISOString();
+const row = (sec, metric, value, extra = {}) => ({ time: at(sec), source: 'camera', sensor_id: '', metric, value, samples: 3, ...extra });
+
+test('the chart window runs from the workout start to its end, and an unfinished or broken one has none', () => {
+  const w = chartWindow(T0, at(60));
+  assert.equal(w.durationS, 60);
+  assert.ok(Date.parse(w.start) < Date.parse(T0) && Date.parse(w.end) > Date.parse(at(60)));
+  assert.equal(chartWindow(T0, null), null);
+  assert.equal(chartWindow(T0, at(-5)), null);
+  assert.equal(chartWindow('nope', at(5)), null);
+});
+
+test('the bucket size keeps about 240 points per line however long the workout is', () => {
+  assert.equal(bucketSecondsFor(24), 0.1);
+  assert.equal(bucketSecondsFor(120), 0.5);
+  assert.equal(bucketSecondsFor(2400), 10);
+  assert.equal(bucketSecondsFor(1), 0.1);
+});
+
+test('the metrics asked for are the counted joint on both sides plus the three back sections', () => {
+  assert.deepEqual(metricsToFetch('knee'), ['left_knee_angle', 'right_knee_angle', 'spine_lumbar', 'spine_mid', 'spine_upper']);
+  assert.deepEqual(metricsToFetch('elbow').slice(0, 2), ['left_elbow_angle', 'right_elbow_angle']);
+});
+
+test('the left and right sides become one line, in time order, in seconds since the start', () => {
+  const rows = [row(2, 'right_knee_angle', 100), row(1, 'left_knee_angle', 170), row(1, 'right_knee_angle', 160), row(2, 'left_knee_angle', 90)];
+  const c = buildChart(rows, T0, at(10), 'knee');
+  assert.deepEqual(c.angle.points, [{ t: 1, v: 165 }, { t: 2, v: 95 }]);
+  assert.equal(c.angle.label, 'Knee angle');
+  assert.equal(c.durationS, 10);
+  assert.deepEqual(c.back, []);
+});
+
+test('a push-up chart uses the elbow and ignores knee data', () => {
+  const rows = [row(1, 'left_knee_angle', 100), row(1, 'left_elbow_angle', 150), row(1, 'right_elbow_angle', 154)];
+  const c = buildChart(rows, T0, at(5), 'elbow');
+  assert.deepEqual(c.angle.points, [{ t: 1, v: 152 }]);
+  assert.equal(c.angle.label, 'Elbow angle');
+});
+
+test('wearable back sections are separate lines, lower back first, and only the ones that have data', () => {
+  const rows = [row(1, 'spine_upper', 2, { source: 'imu' }), row(2, 'spine_lumbar', 20, { source: 'imu' }), row(1, 'spine_lumbar', 5, { source: 'imu' }), row(1, 'imu_pitch', 30, { source: 'imu' })];
+  const c = buildChart(rows, T0, at(5), 'knee');
+  assert.deepEqual(c.back.map((s) => s.label), ['Lower back', 'Upper back']);
+  assert.deepEqual(c.back[0].points, [{ t: 1, v: 5 }, { t: 2, v: 20 }]); // sorted by time
+  assert.equal(c.angle, null); // no camera data in this workout
+});
+
+test('each saved rep becomes a band on the chart', () => {
+  const reps = [
+    { rep_number: 1, metrics: { started_at: at(1), ended_at: at(3) } },
+    { rep_number: 2, metrics: { started_at: at(4), ended_at: at(6.5) } },
+    { rep_number: 3, metrics: {} }, // an older rep with no recorded window: no band
+  ];
+  const c = buildChart([row(1, 'left_knee_angle', 150)], T0, at(10), 'knee', reps);
+  assert.deepEqual(c.repBands, [{ rep: 1, t0: 1, t1: 3 }, { rep: 2, t0: 4, t1: 6.5 }]);
+});
+
+test('odd rows never crash the chart: NaN values, bad times, unknown metrics', () => {
+  const rows = [row(1, 'left_knee_angle', NaN), { ...row(1, 'left_knee_angle', 100), time: 'garbage' }, row(1, 'something_else', 5), row(2, 'left_knee_angle', 120)];
+  const c = buildChart(rows, T0, at(5), 'knee');
+  assert.deepEqual(c.angle.points, [{ t: 2, v: 120 }]);
+  assert.equal(buildChart([], T0, at(5), 'knee').angle, null);
+});
+
+test('the reading count is the stored samples behind the averaged points', () => {
+  const rows = [row(1, 'left_knee_angle', 100, { samples: 7 }), row(1, 'spine_lumbar', 5, { samples: 5, source: 'imu' })];
+  assert.equal(buildChart(rows, T0, at(5), 'knee').readings, 12);
+});
+
+test('axis ranges are padded and rounded to tidy numbers', () => {
+  assert.deepEqual(niceDomain([88, 171]), [80, 180]);
+  assert.deepEqual(niceDomain([5, 5.5]), [0, 20]); // never a zero-height axis
+  assert.deepEqual(niceDomain([]), [0, 180]);
+  assert.deepEqual(ticks([80, 180], 4), [80, 105, 130, 155, 180]);
+});
+
+test('a line is drawn in the plot box with larger values higher up, and a long gap breaks it', () => {
+  const joined = linePath([{ t: 0, v: 0 }, { t: 1, v: 100 }, { t: 2, v: 50 }], [0, 2], [0, 100], 200, 100);
+  assert.equal(joined, 'M0.0 100.0 L100.0 0.0 L200.0 50.0');
+  const gappy = linePath([{ t: 0, v: 0 }, { t: 5, v: 100 }, { t: 10, v: 50 }], [0, 10], [0, 100], 200, 100); // 5 s gaps (> 1.5 s)
+  assert.equal(gappy, 'M0.0 100.0 M100.0 0.0 M200.0 50.0');
+  assert.equal(linePath([], [0, 1], [0, 1], 10, 10), '');
+  assert.equal(linePath([{ t: 50, v: 1 }], [0, 10], [0, 10], 10, 10), ''); // outside the axis: not drawn
+});
+
+test('formatSeconds reads naturally', () => {
+  assert.deepEqual([formatSeconds(4.4), formatSeconds(59.6), formatSeconds(75), formatSeconds(605)], ['4s', '60s', '1:15', '10:05']);
+});
+
+test('readings are requested downsampled, for one workout, with one metric parameter per series', async () => {
+  const calls = [];
+  const f = async (url, init) => (calls.push({ url, init }), { ok: true, status: 200, json: async () => ({ available: true, readings: [] }) });
+  const out = await getReadings('http://api.test/', 'tok', 'w1', { start: '2026-11-08T11:59:59Z', end: '2026-11-08T12:10:00Z', metrics: ['left_knee_angle', 'spine_lumbar'], bucketSeconds: 0.5 }, f);
+  assert.deepEqual(out, { available: true, readings: [] });
+  const u = new URL(calls[0].url);
+  assert.equal(u.pathname, '/api/workouts/w1/readings');
+  assert.deepEqual(u.searchParams.getAll('metric'), ['left_knee_angle', 'spine_lumbar']);
+  assert.equal(u.searchParams.get('bucket_seconds'), '0.5');
+  assert.equal(u.searchParams.get('limit'), '5000');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer tok');
+});
+
+test('a failed readings request says why, and "not available" is a normal answer, not an error', async () => {
+  const bad = async () => ({ ok: false, status: 404, json: async () => ({ detail: 'session not found' }) });
+  await assert.rejects(getReadings('http://api.test', 't', 'w', { start: 'a', end: 'b', metrics: [], bucketSeconds: 1 }, bad), /404 session not found/);
+  const off = async () => ({ ok: true, status: 200, json: async () => ({ available: false, reason: 'not_configured', readings: [] }) });
+  assert.deepEqual(await getReadings('http://api.test', 't', 'w', { start: 'a', end: 'b', metrics: [], bucketSeconds: 1 }, off), { available: false, reason: 'not_configured', readings: [] });
 });
