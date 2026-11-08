@@ -6,6 +6,7 @@ import {
   TabTriggerSlotProps,
   TabListProps,
 } from 'expo-router/ui';
+import { Link } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { Pressable, useColorScheme, View, StyleSheet } from 'react-native';
 
@@ -59,6 +60,16 @@ export function CustomTabList(props: TabListProps) {
         </ThemedText>
 
         {props.children}
+
+        <Link href="/games" asChild>
+          <Pressable accessibilityRole="link" testID="nav-games">
+            <ThemedView type="backgroundElement" style={styles.tabButtonView}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Games
+              </ThemedText>
+            </ThemedView>
+          </Pressable>
+        </Link>
 
         <ExternalLink href="https://docs.expo.dev" asChild>
           <Pressable style={styles.externalPressable}>

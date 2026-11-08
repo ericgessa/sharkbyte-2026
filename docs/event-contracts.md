@@ -6,6 +6,9 @@ Source of truth for messages between the mobile/web client, the FastAPI server
 
 All messages are JSON text frames. Unknown fields are rejected (`extra="forbid"`).
 
+GRIT Games (results and 1v1 rooms) have their own endpoints and WebSocket; their contract is in
+[grit-games.md](grit-games.md) (Pydantic models in `server/app/schemas/games.py`).
+
 ## REST
 
 | Method | Path | Notes |

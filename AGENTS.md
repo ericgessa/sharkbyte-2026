@@ -48,6 +48,9 @@ server/
   app/services/ratelimit.py         token bucket + per-user limiter (REST and WebSocket limits)
   app/services/exercises.py         exercise registry (one place to add an exercise; see docs/adding-an-exercise.md)
   app/services/rep_counter.py
+  app/api/games.py                  GRIT Games: results, personal bests, 1v1 rooms (REST + WS); docs/grit-games.md
+  app/services/game_rooms.py        live 1v1 room state machine (server-authoritative); game_results.py scores saved rounds
+  app/services/games_db.py          Supabase access for game results and finished races
   app/simulation.py                 simulated pose data for tests/demo
   app/services/coaching.py          rule-based coach (always the fallback)
   app/services/agent.py             optional LLM layer on top of the rules: guardrails, fallbacks, Anthropic provider (docs/AI_COACH.md)

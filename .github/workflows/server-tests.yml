@@ -32,3 +32,6 @@ jobs:
       - name: mobile pose tests
         working-directory: mobile
         run: npm run test:pose
+      - name: mobile GRIT Games tests
+        working-directory: mobile
+        run: npm run test:games

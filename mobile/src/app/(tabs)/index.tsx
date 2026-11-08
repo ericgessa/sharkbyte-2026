@@ -46,6 +46,7 @@ export default function HomeScreen() {
 
         <ThemedView type="backgroundElement" style={styles.stepContainer}>
           <Button title='Exercises' onPress={() => router.push('/pose')} />
+          <Button title='GRIT Games' onPress={() => router.push('/games')} />
         </ThemedView>
 
         {Platform.OS === 'web' && <WebBadge />}

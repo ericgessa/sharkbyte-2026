@@ -87,6 +87,8 @@ The schema lives in `supabase/migrations/` and must be applied in filename order
 1. `20261107000001_create_tables.sql`: tables, constraints, indexes
 2. `20261107000002_row_level_security.sql`: RLS, grants, policies
 3. `20261107000003_profile_trigger_and_seed.sql`: profile-on-signup trigger, `squat` exercise
+4. `20261108000001_grit_games.sql`: GRIT Games results and finished races (additive; touches no existing table). Until it
+   is applied the Games screens still play, but results are not saved and the API answers 503 with this file's name.
 
 ### Option A: Supabase CLI to the cloud project (recommended)
 

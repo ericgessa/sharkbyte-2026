@@ -160,3 +160,62 @@ class FakeTiger:
 
     def close(self) -> None:
         pass
+
+
+class InMemoryGameStore:
+    """Stands in for GameStore (GRIT Games results and finished races)."""
+
+    def __init__(self) -> None:
+        self.results: list[dict] = []
+        self.races: dict[str, dict] = {}
+        self.not_set_up = False  # simulate "the migration has not been applied"
+        self.fail_race_save = False
+        self._clock = 0
+
+    def _check(self) -> None:
+        if self.not_set_up:
+            from app.services.games_db import GamesNotSetUpError
+
+            raise GamesNotSetUpError()
+
+    def create_result(self, row: dict) -> dict:
+        self._check()
+        if row.get("workout_session_id") and any(r.get("workout_session_id") == row["workout_session_id"] for r in self.results):
+            raise RuntimeError("duplicate key value violates unique constraint uq_game_results_workout")
+        self._clock += 1
+        saved = {**row, "id": str(uuid4()), "created_at": f"2026-11-08T10:00:{self._clock:02d}+00:00"}
+        self.results.append(saved)
+        return dict(saved)
+
+    def result_for_workout(self, session_id, user_id: str) -> dict | None:
+        self._check()
+        return next((dict(r) for r in self.results if r.get("workout_session_id") == str(session_id) and r["user_id"] == user_id), None)
+
+    def get_result(self, result_id, user_id: str) -> dict | None:
+        self._check()
+        return next((dict(r) for r in self.results if r["id"] == str(result_id) and r["user_id"] == user_id), None)
+
+    def list_results(self, user_id: str, game=None, exercise=None, limit: int = 20) -> list[dict]:
+        self._check()
+        rows = [dict(r) for r in self.results if r["user_id"] == user_id and (not game or r["game"] == game) and (not exercise or r["exercise"] == exercise)]
+        return sorted(rows, key=lambda r: r["created_at"], reverse=True)[:limit]
+
+    def save_race(self, room: dict, players: list[dict], results: list[dict]) -> str:
+        self._check()
+        if self.fail_race_save:
+            raise RuntimeError("simulated database outage")
+        room_id = str(uuid4())
+        self.races[room_id] = {**room, "id": room_id, "players": [dict(p, room_id=room_id) for p in players]}
+        for r in results:
+            self.create_result({**r, "room_id": room_id})
+        return room_id
+
+    def get_race(self, room_id, user_id: str) -> dict | None:
+        self._check()
+        race = self.races.get(str(room_id))
+        if race is None or not any(p["user_id"] == user_id for p in race["players"]):
+            return None
+        return dict(race)
+
+    def ping(self) -> bool:
+        return not self.not_set_up

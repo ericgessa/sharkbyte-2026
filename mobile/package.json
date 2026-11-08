@@ -45,7 +45,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test:pose": "node --experimental-strip-types --no-warnings --import ./src/pose/test-register.mjs --test src/pose/pose.test.mjs"
+    "test:pose": "node --experimental-strip-types --no-warnings --import ./src/pose/test-register.mjs --test src/pose/pose.test.mjs",
+    "test:games": "node --experimental-strip-types --no-warnings --import ./src/pose/test-register.mjs --test src/games/games.test.mjs"
   },
   "private": true
 }

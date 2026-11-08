@@ -27,7 +27,7 @@ sensor calibration are not built yet.
 | [`server/`](server/) | FastAPI backend: REST + WebSocket API, rep counter, rule-based coach, optional LLM layer. |
 | [`supabase/`](supabase/) | Supabase config and SQL migrations (users, workouts, reps, coaching events, security rules). |
 | [`tigerdata/`](tigerdata/) | Tiger Data (TimescaleDB) migration for the high-frequency sensor readings. |
-| [`docs/`](docs/) | Message contracts, frontend guide, AI coach, deployment, how to add an exercise. |
+| [`docs/`](docs/) | Message contracts, frontend guide, AI coach, deployment, how to add an exercise, [GRIT Games](docs/grit-games.md). |
 
 Two databases with separate jobs: **Supabase** holds accounts and the product data; **Tiger Data** holds the
 sensor time-series and answers time-series questions. Both share the workout's `session_id`.

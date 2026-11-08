@@ -12,10 +12,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api import games as games_api
 from app.api import routes, websocket
 from app.services.agent import agent_from_env
 from app.services.auth import SupabaseAuth
 from app.services.database import DatabaseConfigError, SupabaseStore
+from app.services.game_rooms import GameRooms
+from app.services.games_db import GameStore, GamesNotSetUpError
 from app.services.ingest import SensorIngestor
 from app.services.ratelimit import KeyedLimiter
 from app.services.session_manager import DEFAULT_IDLE_TTL_S, DEFAULT_SWEEP_INTERVAL_S, LiveSessions, sweep_loop
@@ -44,6 +47,8 @@ def create_app(
     timeseries: Any = None,
     ingest: Any = None,
     agent: Any = None,
+    games: Any = None,
+    rooms: Any = None,
     idle_ttl_s: float = DEFAULT_IDLE_TTL_S,
     sweep_interval_s: float = DEFAULT_SWEEP_INTERVAL_S,
 ) -> FastAPI:
@@ -64,6 +69,8 @@ def create_app(
         try:
             yield
         finally:
+            for driver in list(application.state.room_drivers.values()):
+                driver.cancel()  # live 1v1 rooms end with the server
             sweeper.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sweeper
@@ -86,6 +93,9 @@ def create_app(
     app.state.tiger = tiger
     app.state.ingest = ingestor
     app.state.live = LiveSessions()
+    app.state.games = games if games is not None else GameStore()  # GRIT Games results and races (Supabase)
+    app.state.rooms = rooms if rooms is not None else GameRooms()  # live 1v1 rooms, in memory
+    app.state.room_drivers = {}
     app.state.agent = agent if agent is not None else agent_from_env()  # LLM coach; rules-only unless configured
     app.state.summary_cache = OrderedDict()  # finished workouts' recaps (immutable, so cacheable)
     app.state.summary_limiter = KeyedLimiter(rate_per_s=6 / 60, burst=3)  # recaps can cost an LLM call
@@ -98,7 +108,12 @@ def create_app(
     async def _db_not_configured(_: Request, exc: DatabaseConfigError) -> JSONResponse:
         return JSONResponse({"detail": "database is not configured on the server"}, status_code=503)
 
+    @app.exception_handler(GamesNotSetUpError)
+    async def _games_not_set_up(_: Request, exc: GamesNotSetUpError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+
     app.include_router(routes.router)
+    app.include_router(games_api.router)
     app.include_router(websocket.router)
     return app
 
