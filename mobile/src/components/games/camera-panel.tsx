@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 
 import { PoseCamera } from '@/components/pose-camera';
+import { Grits } from '@/constants/grits';
 import type { PoseFrameInfo } from '@/components/pose-camera-types';
 import type { PoseAngles } from '@/pose/angles';
 import { jointAngle, profileFor, type ExerciseSlug } from '@/games/exercise';
 
-import { Badge, Body } from './ui';
+import { Badge, Body } from './ui-grits';
 
 export type CameraStatus = 'off' | 'no-person' | 'tracking';
 
@@ -68,7 +69,7 @@ export function CameraPanel({ exercise, status, fps, onFrame, width = 360 }: { e
     <View style={{ width, maxWidth: '100%', gap: 8 }}>
       <CameraBadge status={status} fps={fps} />
       <PoseCamera onFrame={onFrame} />
-      <Body style={{ fontSize: 13, color: '#98a5a1' }}>{PLACEMENT[exercise]} Your video never leaves this device.</Body>
+      <Body style={{ fontSize: 13, color: Grits.inkSoft }}>{PLACEMENT[exercise]} Your video never leaves this device.</Body>
     </View>
   );
 }

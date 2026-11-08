@@ -12,6 +12,9 @@ class InMemoryStore:
         self.reps: dict[str, dict[int, dict]] = {}
         self.events: dict[str, dict[str, dict]] = {}
         self.fail_saves = False
+        self.reports: dict[str, dict] = {}  # saved coach reports, one per workout
+        self.reports_not_set_up = False  # simulate "the workout_reports migration has not been applied"
+        self.report_saves = 0
 
     def create_session(self, user_id: str, exercise: str) -> dict:
         row = {
@@ -52,6 +55,7 @@ class InMemoryStore:
         if not row or row["user_id"] != user_id:
             return False
         del self.sessions[str(session_id)]  # cascade, like Postgres
+        self.reports.pop(str(session_id), None)
         self.reps.pop(str(session_id), None)
         self.events.pop(str(session_id), None)
         return True
@@ -84,6 +88,22 @@ class InMemoryStore:
         self.events.setdefault(str(session_id), {})[str(event_id)] = {
             "rep_number": rep_number, "issue_code": issue_code, "message": message, "action": action,
         }
+
+    def get_report(self, session_id) -> dict | None:
+        if self.reports_not_set_up:
+            return None
+        r = self.reports.get(str(session_id))
+        return dict(r) if r else None
+
+    def save_report(self, session_id, summary: str, source: str, model: str | None = None) -> None:
+        if self.reports_not_set_up:
+            from app.services.database import ReportsNotSetUpError
+
+            raise ReportsNotSetUpError()
+        now = datetime.now(timezone.utc).isoformat()
+        old = self.reports.get(str(session_id))
+        self.reports[str(session_id)] = {"summary": summary, "source": source, "model": model, "created_at": old["created_at"] if old else now, "updated_at": now}
+        self.report_saves += 1
 
     def count_repetitions(self, session_id) -> int:
         return len(self.reps.get(str(session_id), {}))

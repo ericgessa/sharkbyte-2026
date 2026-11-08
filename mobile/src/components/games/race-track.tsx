@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { G } from '@/games/theme';
+import { GG as G } from '@/games/theme';
 
 export type Lane = {
   id: string;
@@ -94,14 +94,14 @@ export function RaceTrack({ lanes }: { lanes: Lane[] }) {
 }
 
 const s = StyleSheet.create({
-  lane: { backgroundColor: G.panel, borderColor: G.line, borderWidth: 1, borderRadius: 14, padding: 12, gap: 6 },
+  lane: { backgroundColor: G.panel, borderRadius: 22, padding: 14, gap: 6 },
   laneHead: { flexDirection: 'row', justifyContent: 'space-between' },
   laneLabel: { fontSize: 14, fontWeight: '800', letterSpacing: 0.5 },
   laneReps: { color: G.muted, fontSize: 13, fontWeight: '700' },
-  track: { height: 54, borderRadius: 10, backgroundColor: '#0f1315', overflow: 'hidden', position: 'relative', justifyContent: 'center' },
-  dashes: { position: 'absolute', left: 0, right: 0, top: 26, height: 2, backgroundColor: '#1f282b' },
-  fill: { position: 'absolute', left: 0, top: 0, bottom: 0, opacity: 0.16 },
-  runner: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: '#0b0d0c', borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  track: { height: 54, borderRadius: 999, backgroundColor: G.panelHi, overflow: 'hidden', position: 'relative', justifyContent: 'center' },
+  dashes: { position: 'absolute', left: 0, right: 0, top: 26, height: 2, backgroundColor: G.line },
+  fill: { position: 'absolute', left: 0, top: 0, bottom: 0, opacity: 0.22 },
+  runner: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: G.greenDim, borderWidth: 3, alignItems: 'center', justifyContent: 'center' },
   runnerIcon: { fontSize: 22 },
   finish: { position: 'absolute', right: 0, top: 0, bottom: 0, width: 14 },
   pct: { color: G.muted, fontSize: 12, fontWeight: '700', textAlign: 'right' },

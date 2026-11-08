@@ -6,7 +6,7 @@ import type { ExerciseController } from '@/games/exercise-controller';
 import { EXERCISES, profileFor, type ExerciseSlug } from '@/games/exercise';
 import { getBest, type GameResult } from '@/games/games-api';
 import { describeComparison, formatDuration, ghostAt, MAX_TARGET, MAX_TIME_S, MIN_TARGET, MIN_TIME_S, parseSetting, SoloRace, TARGET_PRESETS, TIME_PRESETS_S } from '@/games/racer-engine';
-import { G } from '@/games/theme';
+import { GG as G } from '@/games/theme';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken } from '@/utils/auth';
 
@@ -14,7 +14,7 @@ import { CameraBadge, CameraPanel, useCameraFeed } from './camera-panel';
 import { finishAndSave, makeController, type SavedRound } from './game-session';
 import { RaceTrack, type Lane } from './race-track';
 import { CoachSummary, FeedbackSummary, SaveStatus, VerificationBadge } from './results';
-import { Badge, Body, Btn, Chip, Panel, Row, SectionTitle, Stat, Steps } from './ui';
+import { Badge, Body, Btn, Chip, Panel, Row, SectionTitle, Stat, Steps } from './ui-grits';
 
 type Phase = 'setup' | 'countdown' | 'connecting' | 'racing' | 'results';
 
@@ -27,7 +27,7 @@ type Summary = {
   hadGhost: boolean;
 };
 
-const inputStyle = { backgroundColor: '#0f1315', color: G.text, borderColor: G.line, borderWidth: 1, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12, width: 90, fontSize: 15 } as const;
+const inputStyle = { backgroundColor: G.panelHi, color: G.text, borderColor: G.line, borderWidth: 2, borderRadius: 14, paddingVertical: 8, paddingHorizontal: 12, width: 90, fontSize: 15, fontWeight: '600' } as const;
 
 /** Rep Racer, Solo Goal and Personal Best: the same race, the second one against a ghost of your best recorded attempt. */
 export function SoloRacer({ mode, onBack }: { mode: 'solo' | 'personal_best'; onBack: () => void }) {

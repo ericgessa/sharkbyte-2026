@@ -23,7 +23,7 @@ from app.services.game_rooms import GameRooms
 from app.services.games_db import GameStore, GamesNotSetUpError
 from app.services.ingest import SensorIngestor
 from app.services.ratelimit import KeyedLimiter
-from app.services.sensor_pairing import SensorPairing
+from app.services.sensor_pairing import SensorPairing, bridge_secret
 from app.services.session_manager import DEFAULT_IDLE_TTL_S, DEFAULT_SWEEP_INTERVAL_S, LiveSessions, sweep_loop
 from app.services.timeseries import TigerStore
 
@@ -74,6 +74,8 @@ def create_app(
         finally:
             for driver in list(application.state.room_drivers.values()):
                 driver.cancel()  # live 1v1 rooms end with the server
+            for task in list(application.state.report_tasks):
+                task.cancel()  # a report still being written is written again the next time it is asked for
             sweeper.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sweeper
@@ -99,9 +101,12 @@ def create_app(
     app.state.games = games if games is not None else GameStore()  # GRIT Games results and races (Supabase)
     app.state.rooms = rooms if rooms is not None else GameRooms()  # live 1v1 rooms, in memory
     app.state.room_drivers = {}
-    app.state.sensor_pairing = SensorPairing()  # laptop bridge <-> workout codes and tokens (in memory)
+    # Laptop bridge <-> workout: codes in memory, tokens signed so a paired bridge survives a server restart.
+    app.state.sensor_pairing = SensorPairing(secret=bridge_secret())
     app.state.agent = agent if agent is not None else agent_from_env()  # LLM coach; rules-only unless configured
-    app.state.summary_cache = OrderedDict()  # finished workouts' recaps (immutable, so cacheable)
+    app.state.summary_cache = OrderedDict()  # recaps that could not be saved in Supabase (kept for this server run)
+    app.state.report_inflight = {}  # workout id -> the task writing its coach report (so a request joins it)
+    app.state.report_tasks = set()
     app.state.summary_limiter = KeyedLimiter(rate_per_s=6 / 60, burst=3)  # recaps can cost an LLM call
     # Per-user request limits (generous for a real app; stops a runaway client or a script from hammering the
     # backend and, through it, Supabase). Tests and deployments can replace these on app.state.

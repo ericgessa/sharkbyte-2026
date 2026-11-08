@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 
-import { G } from '@/games/theme';
+import { GG as G } from '@/games/theme';
 
 import { useCoachSummary } from './game-session';
-import { Badge, Body, Btn, Panel, SectionTitle } from './ui';
+import { Badge, Body, Btn, Panel, SectionTitle } from './ui-grits';
 
 /** "Good rep!" x 7 ... as a short list, most frequent first. */
 export function FeedbackSummary({ counts }: { counts: Record<string, number> }) {

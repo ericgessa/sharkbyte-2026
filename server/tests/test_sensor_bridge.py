@@ -10,7 +10,17 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.main import create_app
 from app.services.ingest import SensorIngestor
-from app.services.sensor_pairing import CODE_TTL_S, MAX_FAILURES_PER_WINDOW, SensorPairing, normalize_code
+from app.services import netinfo
+from app.services.sensor_pairing import (
+    CODE_TTL_S,
+    MAX_FAILURES_PER_CLIENT,
+    MAX_FAILURES_PER_WINDOW,
+    TOKEN_TTL_S,
+    Pairing,
+    SensorPairing,
+    bridge_secret,
+    normalize_code,
+)
 from tests.fakes import ALICE, BOB, FakeAuth, FakeTiger, InMemoryStore, auth_message
 
 
@@ -95,15 +105,67 @@ def test_revoking_a_session_ends_its_codes_and_tokens():
     assert p.check_token(other_token) is not None
 
 
-def test_a_flood_of_wrong_codes_locks_redemption_for_a_while_without_burning_the_real_code():
+def test_a_flood_of_wrong_codes_locks_that_client_for_a_while_without_burning_the_real_code():
     clock = Clock()
     p, sid = SensorPairing(now=clock), uuid4()
     code = p.issue_code(sid, "u1")
-    for _ in range(MAX_FAILURES_PER_WINDOW):
-        assert p.redeem("WRONGWRONG") is None
-    assert p.redeem(code) is None  # locked
+    for _ in range(MAX_FAILURES_PER_CLIENT):
+        assert p.redeem("WRONGWRONG", client="10.0.0.9") is None
+    assert p.redeem(code, client="10.0.0.9") is None  # this client is locked
     clock.t += 61
-    assert p.redeem(code) is not None  # still usable afterwards
+    assert p.redeem(code, client="10.0.0.9") is not None  # still usable afterwards
+
+
+def test_one_guessing_or_mistyping_client_cannot_lock_everyone_else_out():
+    p, sid = SensorPairing(), uuid4()
+    code = p.issue_code(sid, "u1")
+    for _ in range(MAX_FAILURES_PER_CLIENT * 5):
+        p.redeem("WRONGWRONG", client="203.0.113.7")
+    assert p.redeem(code, client="192.168.1.40") is not None  # the real user's laptop pairs fine
+
+
+def test_a_distributed_flood_still_hits_the_shared_ceiling():
+    clock = Clock()
+    p, sid = SensorPairing(now=clock), uuid4()
+    code = p.issue_code(sid, "u1")
+    for i in range(MAX_FAILURES_PER_WINDOW):
+        p.redeem("WRONGWRONG", client=f"198.51.100.{i}")
+    assert p.redeem(code, client="192.168.1.40") is None
+    clock.t += 61
+    assert p.redeem(code, client="192.168.1.40") is not None
+
+
+def test_a_bridge_token_survives_a_server_restart_with_the_same_secret():
+    secret, sid = b"k" * 32, uuid4()
+    before = SensorPairing(secret=secret)
+    pair, token = before.redeem(before.issue_code(sid, "u1"))
+    after = SensorPairing(secret=secret)  # a new process: nothing in memory
+    assert after.check_token(token) == pair
+    assert SensorPairing(secret=b"x" * 32).check_token(token) is None  # another server's secret
+
+
+def test_forged_tampered_or_expired_tokens_are_refused():
+    now = [1_800_000_000.0]
+    p, sid = SensorPairing(secret=b"k" * 32, wall=lambda: now[0]), uuid4()
+    _, token = p.redeem(p.issue_code(sid, "u1"))
+    version, payload, sig = token.split(".")
+    other = SensorPairing(secret=b"k" * 32).make_token(Pairing(uuid4(), "mallory"))
+    for bad in ("", "x", "v1..", f"v2.{payload}.{sig}", f"{version}.{payload}.{sig[:-2]}AA",
+                f"{version}.{other.split('.')[1]}.{sig}", token + "x"):
+        assert p.check_token(bad) is None, bad
+    now[0] += TOKEN_TTL_S + 1
+    assert p.check_token(token) is None
+
+
+def test_the_secret_comes_from_the_environment_and_is_never_the_supabase_key_itself(monkeypatch):
+    monkeypatch.delenv("SENSOR_BRIDGE_SECRET", raising=False)
+    monkeypatch.delenv("SUPABASE_SECRET_KEY", raising=False)
+    assert bridge_secret() is None
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "sb_secret_abc")
+    derived = bridge_secret()
+    assert derived and b"sb_secret_abc" not in derived and derived == bridge_secret()
+    monkeypatch.setenv("SENSOR_BRIDGE_SECRET", "team-secret")
+    assert bridge_secret() != derived
 
 
 # ---- REST ----------------------------------------------------------------------
@@ -116,6 +178,64 @@ def test_only_the_owner_can_get_a_code_and_only_for_an_active_workout(client):
     assert client.post(f"/api/workouts/{sid}/sensor-code", headers=ALICE).status_code == 200
     client.post(f"/api/workouts/{sid}/finish", headers=ALICE)
     assert client.post(f"/api/workouts/{sid}/sensor-code", headers=ALICE).status_code == 409
+
+
+def test_the_code_reply_says_how_a_bridge_on_another_computer_reaches_the_server(client):
+    sid = new_session(client)
+    body = client.post(f"/api/workouts/{sid}/sensor-code", headers=ALICE).json()
+    assert body["server_urls"] and all(u.startswith("http") for u in body["server_urls"])
+    assert body["bridge_command"] == f"python hardware/laptop/spine_bridge.py --server {body['server_urls'][0]} --code {body['code']}"
+
+
+def test_bridge_addresses_never_offer_localhost_when_a_network_address_is_known(monkeypatch):
+    monkeypatch.setattr(netinfo, "accepts_from_network", lambda ip, port, now=None: True)
+    urls, warning = netinfo.bridge_addresses("http://localhost:8000/", "localhost", 8000, ips=["192.168.1.20"])
+    assert urls == ["http://192.168.1.20:8000"] and warning is None
+    # The app reached the server at a LAN address or a tunnel: that address comes first.
+    urls, _ = netinfo.bridge_addresses("https://abc.trycloudflare.com/", "abc.trycloudflare.com", 8000, ips=["192.168.1.20"])
+    assert urls == ["https://abc.trycloudflare.com", "http://192.168.1.20:8000"]
+    # Nothing but loopback known: the same-computer address is still offered (better than nothing).
+    assert netinfo.bridge_addresses("http://localhost:8000/", "localhost", 8000, ips=[])[0] == ["http://localhost:8000"]
+
+
+def test_a_server_that_only_listens_on_its_own_computer_is_called_out_with_the_fix(monkeypatch):
+    monkeypatch.setattr(netinfo, "accepts_from_network", lambda ip, port, now=None: False)
+    _, warning = netinfo.bridge_addresses("http://127.0.0.1:8000/", "127.0.0.1", 8000, ips=["192.168.1.20"])
+    assert warning and "dev_server" in warning and "0.0.0.0" in warning
+
+
+def test_the_reachability_check_tells_a_local_only_listener_from_a_network_one():
+    import socket
+
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))  # listening on loopback ONLY, like plain 'uvicorn app.main:app'
+        srv.listen()
+        port = srv.getsockname()[1]
+        assert netinfo.accepts_from_network("127.0.0.1", port, now=0.0) is True
+        lan = netinfo.lan_ips()
+        if lan:
+            assert netinfo.accepts_from_network(lan[0], port, now=0.0) is False
+
+
+def test_a_paired_bridge_reconnects_after_the_server_restarts(monkeypatch, tiger):
+    monkeypatch.setenv("SENSOR_BRIDGE_SECRET", "same-on-every-start")
+    store = InMemoryStore()
+    with TestClient(create_app(store=store, auth=FakeAuth(), timeseries=tiger)) as first:
+        sid = new_session(first)
+        with first.websocket_connect("/ws/sensors") as ws:
+            ws.send_text(bridge_auth(pair_code=get_code(first, sid)))
+            token = ws.receive_json()["bridge_token"]
+    with TestClient(create_app(store=store, auth=FakeAuth(), timeseries=tiger)) as restarted:  # memory is empty
+        with restarted.websocket_connect("/ws/sensors") as ws:
+            ws.send_text(bridge_auth(bridge_token=token))
+            ready = ws.receive_json()
+            assert ready["type"] == "sensor_ready" and ready["session_id"] == sid
+        restarted.post(f"/api/workouts/{sid}/finish", headers=ALICE)
+        with restarted.websocket_connect("/ws/sensors") as ws:  # finished: the token is dead, restart or not
+            ws.send_text(bridge_auth(bridge_token=token))
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws.receive_json()
+            assert closed.value.code == 4409
 
 
 # ---- the bridge socket ------------------------------------------------------------
@@ -219,7 +339,7 @@ def test_finishing_the_workout_ends_the_bridge_and_its_token(client):
         again.send_text(bridge_auth(bridge_token=token))
         with pytest.raises(WebSocketDisconnect) as exc:
             again.receive_json()
-        assert exc.value.code == 4401
+        assert exc.value.code == 4409  # "the workout ended" (not 4401 "unknown pairing"): the bridge says the right thing
 
 
 def test_the_bridge_only_takes_sensor_messages_for_its_own_workout(client):

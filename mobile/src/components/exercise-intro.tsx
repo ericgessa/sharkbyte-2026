@@ -116,7 +116,7 @@ function Intro({ info, spine }: { info: ExerciseInfo; spine: boolean }) {
           <GritsButton
             big
             tone="orange"
-            label={hasHistory || checking ? 'Challenge' : '🔒 Challenge'}
+            label="Challenge"
             testID="intro-challenge"
             onPress={() => setPanel(panel === 'challenge' ? null : 'challenge')}
           />

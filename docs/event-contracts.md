@@ -20,7 +20,7 @@ GRIT Games (results and 1v1 rooms) have their own endpoints and WebSocket; their
 | GET | `/api/workouts/{session_id}` | 200 `WorkoutOut`, or 404 |
 | DELETE | `/api/workouts/{session_id}` | **Permanently** deletes the workout from both databases: its reps and coaching events (Supabase) and its sensor readings (Tiger Data). 204 on success; 404 if it is not yours or does not exist (so deleting twice is a 404); 503 if sensor data could not be deleted right now, in which case **nothing** was deleted and it is safe to retry. A socket that is still streaming that workout is closed with `4409`. There is no undo, so the app should confirm first |
 | GET | `/api/workouts/{session_id}/summary` | 200 `WorkoutSummaryOut`, or 404. Works on active workouts too (reps saved so far) |
-| GET | `/api/workouts/{session_id}/coach-summary` | 200 `{"summary": "<4-5 sentence report>", "source": "agent"\|"rules"}`: the end-of-workout report: reps, the form issues flagged and attempts not counted (most frequent first), and one thing to focus on next time. `source: "agent"` = Gemini wrote it (the only place an LLM is used); `"rules"` = the deterministic report (AI coach off, unavailable, failed a check, or the user reported pain). Can take up to ~20 s with Gemini. Finished workouts are cached. At most ~6 per minute per user (429 beyond that) |
+| GET | `/api/workouts/{session_id}/coach-summary` | 200 `{"summary": "<4-5 sentence report>", "source": "agent"\|"rules", "saved": bool, "generated_at": "<ISO>"\|null}`: the end-of-workout report: reps, the form issues flagged and attempts not counted (most frequent first), and one thing to focus on next time. **It is written once, automatically, when the workout finishes, and saved in Supabase (`workout_reports`)**, so the History tab gets the stored report and never pays for a second Gemini call; a request that arrives while it is still being written waits for it. `source: "agent"` = Gemini wrote it (the only place an LLM is used); `"rules"` = the deterministic report (AI coach off, unavailable, failed a check, or the user reported pain; a saved rules report is replaced by a Gemini one later if Gemini becomes available, at most every 10 minutes). Workouts finished before this existed, or still open, get one written on request (an open workout's is never saved). `saved: false` means it could not be stored (for example the migration has not been applied): it is still returned. Can take up to ~20 s the first time with Gemini. At most ~6 per minute per user (429 beyond that). Deleting a workout deletes its report |
 | GET | `/api/workouts/{session_id}/analytics` | 200 compact analytics: `supabase` (rep stats, coaching events) + `timeseries` (SQL summaries from Tiger Data, per-rep depth/range trends). `timeseries.available` is `false` with a `reason` (`not_configured` / `unavailable`) when Tiger Data is off or down |
 | GET | `/api/workouts/{session_id}/readings?start=&end=&metric=&bucket_seconds=&limit=` | 200 `{available, readings[]}`: sensor measurements in `[start, end)` (ISO times, naive = UTC), optional `metric` repeats, SQL-downsampled when `bucket_seconds` is set, max 5000 rows. 422 for a bad window |
 | GET | `/api/stats?tz_offset_minutes=0&weeks=8` | 200 `ProgressOut`: your progress across all workouts, for a history/dashboard screen. `totals` (`workouts`, `reps`, `active_seconds`, first/last workout time), `per_exercise` (`exercise`, `workouts`, `total_reps`, `best_workout_reps`, `best_workout_id`, `last_workout_at`; most reps first), `weekly` (one entry per week, oldest first, ending with the current week: `week_start` Monday, `workouts`, `reps`; empty weeks are zeros), `streak` (`current_days`, `longest_days`), `records.most_reps_in_a_workout`, and `games` (Rep Racer: `races`, `finished`, `fastest[]` per exercise and target; **null** until the games migration is applied, the rest still works). Only completed workouts count; a day counts towards the streak only if a workout that day counted at least one rep, and a streak is still alive if you have not trained yet today. Pass your time zone as `tz_offset_minutes` (-840..840, e.g. -300 for US Eastern) so days and weeks line up with your clock (default UTC). `weeks` 1-52. Looks at your newest 1000 workouts. A user with no workouts gets zeros, not an error. Only your own data |
@@ -371,7 +371,11 @@ For the wearable's base station plugged into a laptop (`hardware/laptop/spine_br
 USB access and works on a phone. The user's password never reaches the bridge:
 
 1. The app calls `POST /api/workouts/{session_id}/sensor-code` (bearer token, the user's **active** workout;
-   404 if not theirs, 409 if finished) and shows `{"code":"ABCD-2345","expires_in_s":600}`. A new request
+   404 if not theirs, 409 if finished). Reply:
+   `{"code":"ABCD-2345","expires_in_s":600,"server_urls":["http://192.168.1.20:8000"],"bridge_command":"python hardware/laptop/spine_bridge.py --server http://192.168.1.20:8000 --code ABCD-2345","warning":null}`.
+   Show the code **and** `bridge_command`: `server_urls` are addresses that work from ANOTHER computer (the app's
+   own API address may be `localhost`, which on the bridge laptop means that laptop). `warning` is set when pairing
+   can't work as things stand, with the fix (e.g. the server listens on its own computer only). A new request
    replaces the previous code. Case and dashes don't matter.
 2. The bridge connects to `WS /ws/sensors` and sends, within 10 s,
    `{"schema_version":1,"type":"sensor_auth","pair_code":"ABCD-2345"}`. The code works **once**.
@@ -382,10 +386,13 @@ USB access and works on a phone. The user's password never reaches the bridge:
    `sensor_ready`) and optionally `{"type":"sensor_note","session_id":"UUID","note":"..."}` (≤ 200 chars),
    shown to the app as `sensor_link`. It receives `device_command` messages to pass to the wearable.
 
-Close codes: `4401` wrong/used/expired code, unknown token (tokens are in memory: a server restart forgets them,
-so get a new code) or the 3-hour limit; `4404` / `4409` the workout is gone or finished (its token stops working);
-`4410` a newer bridge took over this workout; `1009` message over 16 KB. Wrong codes are limited to 30 per minute
-across all callers; past that, every redemption is refused until the minute is up.
+Close codes: `4401` wrong/used/expired code, an invalid or expired token, or the 3-hour limit (reconnect with the
+token); `4404` / `4409` the workout is gone or finished (its token stops working); `4410` a newer bridge took over
+this workout; `1009` message over 16 KB. Tokens are signed, not stored, so a paired bridge reconnects after a server
+restart (they last 24 h at most; set `SENSOR_BRIDGE_SECRET`, else they are derived from `SUPABASE_SECRET_KEY`, else
+a restart does end them). Wrong codes are limited to 10 per minute per client address, and 300 per minute across
+all clients; past that, redemptions from the blocked client (or everyone, in a flood) are refused until the minute
+is up. A correct code is never used up by a refusal.
 
 ### Not yet defined
 

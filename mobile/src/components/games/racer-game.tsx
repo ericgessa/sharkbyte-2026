@@ -1,12 +1,13 @@
+import { useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { G } from '@/games/theme';
+import { GG as G } from '@/games/theme';
 
 import { LocalRacer } from './racer-local';
 import { MultiplayerRacer } from './racer-multiplayer';
 import { SoloRacer } from './racer-solo';
-import { Body, GameScreen } from './ui';
+import { Body, GameScreen } from './ui-grits';
 
 type Mode = 'menu' | 'solo' | 'multiplayer' | 'personal_best' | 'local';
 
@@ -18,7 +19,9 @@ const MODES: { id: Exclude<Mode, 'menu'>; title: string; tag: string; text: stri
 ];
 
 export function RacerGame() {
-  const [mode, setMode] = useState<Mode>('menu');
+  // /games/racer?mode=solo (etc.) opens straight into that mode: the GRIT Games cards link here.
+  const { mode: startMode } = useLocalSearchParams<{ mode?: string }>();
+  const [mode, setMode] = useState<Mode>(() => (MODES.some((m) => m.id === startMode) ? (startMode as Mode) : 'menu'));
   return (
     <GameScreen title="Rep Racer" subtitle="Race your friends or beat your personal best.">
       {mode === 'menu' ? (
@@ -29,10 +32,10 @@ export function RacerGame() {
               accessibilityRole="button"
               onPress={() => setMode(m.id)}
               testID={`racer-mode-${m.id}`}
-              style={({ pressed }) => ({ flex: 1, minWidth: 260, backgroundColor: G.panel, borderColor: G.line, borderWidth: 1, borderRadius: 16, padding: 18, gap: 8, opacity: pressed ? 0.8 : 1 })}>
+              style={({ pressed }) => ({ flex: 1, minWidth: 260, backgroundColor: G.panel, borderRadius: 22, padding: 20, gap: 8, transform: [{ scale: pressed ? 0.985 : 1 }] })}>
               <Text style={{ fontSize: 34 }}>{m.icon}</Text>
-              <Text style={{ color: G.green, fontSize: 12, fontWeight: '800', letterSpacing: 2 }}>MODE {m.tag}</Text>
-              <Text style={{ color: G.text, fontSize: 22, fontWeight: '800' }}>{m.title}</Text>
+              <Text style={{ color: G.green, fontSize: 12, fontWeight: '900', letterSpacing: 1.6 }}>MODE {m.tag}</Text>
+              <Text style={{ color: G.text, fontSize: 24, fontWeight: '900', letterSpacing: -0.4 }}>{m.title}</Text>
               <Body style={{ color: G.muted }}>{m.text}</Body>
             </Pressable>
           ))}

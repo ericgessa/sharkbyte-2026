@@ -80,12 +80,13 @@ python -m venv .venv
 .venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env              # then fill it in; see SUPABASE_SETUP.md and TIGERDATA_SETUP.md
-uvicorn app.main:app --reload
+python -m scripts.dev_server      # listens on the network and prints the URLs phones/laptops should use
 ```
 
-The API is then at `http://127.0.0.1:8000`. Check `GET /health`, or open `/docs` for the
-interactive OpenAPI UI. To let a phone or teammate on the same network reach it, run
-`python -m scripts.dev_server` instead: it listens on all interfaces and prints the URLs to use.
+The API is then at `http://127.0.0.1:8000` on this computer (`GET /health`, or `/docs` for the interactive
+OpenAPI UI) and at the printed LAN address for everything else. **Use `dev_server` whenever another device is
+involved: a phone, a teammate, or the spine wearable's laptop bridge.** Plain `uvicorn app.main:app` listens on
+this computer only, and every other device gets "connection refused" (add `--host 0.0.0.0` if you use it).
 (With the Windows Store build of Python, `--reload` can keep serving stale code; see that script's notes.)
 
 Run the tests (offline, no credentials needed):

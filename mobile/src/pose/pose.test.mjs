@@ -7,8 +7,22 @@ import { computePoseAngles, jointAngleDeg, LM } from './angles.ts';
 import { LIBRARY_URL, MEDIAPIPE_VERSION, MODEL_URL, WASM_BASE } from './mediapipe.web.ts';
 import { parseServerEvent, PoseStreamer } from './protocol.ts';
 import { simulatedPushUpFrames, simulatedSquatFrames } from './simulate.ts';
+import { bucketSecondsFor, buildChart, chartWindow, formatSeconds, getReadings, linePath, metricsToFetch, niceDomain, ticks } from './readings.ts';
 import { describeWearableLine, LineSplitter, parseWearableLine, SensorStreamer } from './wearable.ts';
-import { createWorkout, finishWorkout, getCoachReport, getSensorCode, toWsUrl, WorkoutSocket } from './workout-client.ts';
+import { isRounding, layoutFigure, ROUNDING_DEG, sectionTilts } from './spine-figure.ts';
+import { checkBackend, explainConnectionError, splitHost } from '../utils/backend-health.ts';
+import { bridgeCommand, createWorkout, finishWorkout, getCoachReport, getSensorCode, toWsUrl, WorkoutSocket } from './workout-client.ts';
+import {
+  compactNumber,
+  exerciseNoun,
+  fastestRace,
+  formatDuration,
+  getProgress,
+  localTzOffsetMinutes,
+  shortWeekLabel,
+  streakHint,
+} from './progress.ts';
+import { dayLabel, deleteWorkout, exerciseTitle, getWorkoutDetail, groupByDay, listWorkouts, noteKind, workoutLength } from './history.ts';
 
 const near = (a, b, eps = 0.06) => assert.ok(Math.abs(a - b) <= eps, `${a} is not within ${eps} of ${b}`);
 
@@ -309,6 +323,23 @@ test('getSensorCode asks for a pairing code for this workout', async () => {
   await assert.rejects(getSensorCode('http://x', 'T', 'sid-1', fakeFetch(409, { detail: 'workout is not active' }).impl), /409 workout is not active/);
 });
 
+test('the bridge command uses the address the SERVER says works from another computer, never the app\'s localhost', async () => {
+  const reply = {
+    code: 'ABCD-2345', expires_in_s: 600, server_urls: ['http://192.168.1.20:8000'],
+    bridge_command: 'python hardware/laptop/spine_bridge.py --server http://192.168.1.20:8000 --code ABCD-2345', warning: null,
+  };
+  const r = await getSensorCode('http://localhost:8000', 'T', 'sid-1', fakeFetch(200, reply).impl);
+  assert.equal(r.bridge_command, reply.bridge_command);
+  assert.equal(r.warning, null);
+  // An older server sends only the code: the command is built from its addresses, else the API address.
+  const old = await getSensorCode('http://10.0.0.5:8000/', 'T', 'sid-1', fakeFetch(200, { code: 'ABCD-2345', expires_in_s: 600 }).impl);
+  assert.equal(old.bridge_command, 'python hardware/laptop/spine_bridge.py --server http://10.0.0.5:8000 --code ABCD-2345');
+  assert.deepEqual(old.server_urls, []);
+  assert.equal(bridgeCommand('WXYZ-2345', 'http://localhost:8000', ['http://192.168.1.9:8000']), 'python hardware/laptop/spine_bridge.py --server http://192.168.1.9:8000 --code WXYZ-2345');
+  const warned = await getSensorCode('http://localhost:8000', 'T', 's', fakeFetch(200, { ...reply, warning: 'only this computer' }).impl);
+  assert.equal(warned.warning, 'only this computer');
+});
+
 test('close codes are passed on and readiness is lost (so frames stop)', () => {
   const { s, ws, closes } = socket();
   ws.open();
@@ -417,6 +448,70 @@ test('sensor updates go over the workout socket only once it is ready', () => {
   ws.receive({ type: 'session_ready', session_id: 'sid-9', rep_count: 0, exercise: 'squat', analysis_supported: true, paused: false, coaching_enabled: true });
   assert.equal(s.sendSensor(msg), true);
   assert.deepEqual(ws.sent.at(-1), msg);
+});
+
+// ---------------------------------------------------------------- the live spine figure
+
+test('section tilts follow the wearable: each sensor is the one above minus that section\'s bend', () => {
+  const t = sectionTilts({ imu_pitch_deg: 30, spine_upper_deg: 4, spine_mid_deg: 6, spine_lumbar_deg: 20 });
+  // BNO 30, A 26, B 20, C 0: the segments sit midway between their sensors
+  near(t.neck, 30, 1e-9);
+  near(t.upper, 28, 1e-9);
+  near(t.mid, 23, 1e-9);
+  near(t.lumbar, 10, 1e-9);
+  assert.deepEqual(sectionTilts({}), { lumbar: 0, mid: 0, upper: 0, neck: 0 }); // nothing yet: standing straight
+});
+
+test('the figure stands upright on the plate, leans the right way, and flags a rounding section', () => {
+  const straight = layoutFigure({ imu_pitch_deg: 0, spine_upper_deg: 0, spine_mid_deg: 0, spine_lumbar_deg: 0 }, 100);
+  assert.equal(straight.segments.length, 4);
+  assert.ok(straight.segments.every((s) => s.angleDeg === 0));
+  assert.ok(straight.head.cy < straight.segments[3].cy && straight.segments[3].cy < straight.segments[0].cy); // head on top
+  assert.ok(!straight.segments.some((s) => isRounding(s.bendDeg)));
+
+  const bent = layoutFigure({ imu_pitch_deg: 40, spine_upper_deg: 2, spine_mid_deg: 3, spine_lumbar_deg: ROUNDING_DEG + 3 }, 100);
+  assert.ok(bent.head.cx > straight.head.cx, 'leaning forward draws to the right');
+  assert.deepEqual(bent.segments.filter((s) => isRounding(s.bendDeg)).map((s) => s.key), ['lumbar']);
+  assert.ok(bent.segments.every((s) => s.cx >= 0 && s.cx <= 100 && s.cy >= 0 && s.cy <= 100), 'stays inside the plate');
+  const extreme = layoutFigure({ imu_pitch_deg: 400, spine_lumbar_deg: -500 }, 100);
+  assert.ok(extreme.segments.every((s) => Math.abs(s.angleDeg) <= 90), 'silly angles are clamped, never NaN');
+});
+
+// ---------------------------------------------------------------- backend health, in plain words
+
+test('the address the app is calling is split into host and port, with sane defaults', () => {
+  assert.deepEqual(splitHost('http://192.168.0.30:8000'), { host: '192.168.0.30', port: '8000' });
+  assert.deepEqual(splitHost('https://api.example.com/'), { host: 'api.example.com', port: '443' });
+  assert.deepEqual(splitHost('http://localhost'), { host: 'localhost', port: '80' });
+});
+
+test('connection failures are explained for the three ways people actually get them wrong', () => {
+  const wrongPort = explainConnectionError('http://192.168.0.30:8081', 'Failed to fetch');
+  assert.match(wrongPort.problem, /8081/);
+  assert.match(wrongPort.fix, /EXPO_PUBLIC_API_PORT=8000/);
+  const phoneLocalhost = explainConnectionError('http://localhost:8000', 'Network request failed');
+  assert.match(phoneLocalhost.fix, /localhost' is the phone/);
+  const lan = explainConnectionError('http://192.168.0.30:8000', 'Failed to fetch');
+  assert.match(lan.problem, /192\.168\.0\.30:8000/);
+  assert.match(lan.fix, /scripts\.dev_server/);
+  // not a network error: the message is passed through untouched
+  assert.deepEqual(explainConnectionError('http://x:8000', '401 missing bearer token'), { problem: '401 missing bearer token', fix: '' });
+});
+
+test('checkBackend knows the real API, a stranger on the port, and a dead address, and never throws', async () => {
+  assert.deepEqual(await checkBackend('http://x:8000/', fakeFetch(200, { status: 'ok' }).impl), { ok: true, apiUrl: 'http://x:8000' });
+  const stranger = await checkBackend('http://x:8081', fakeFetch(200, { hello: 'expo' }).impl);
+  assert.equal(stranger.ok, false);
+  assert.match(stranger.problem, /not like the GRIT backend/);
+  const notFound = await checkBackend('http://x:8081', fakeFetch(404, {}).impl);
+  assert.equal(notFound.ok, false);
+  assert.match(notFound.problem, /HTTP 404/);
+  const dead = await checkBackend('http://192.168.0.30:8000', async () => { throw new TypeError('Failed to fetch'); });
+  assert.equal(dead.ok, false);
+  assert.match(dead.fix, /scripts\.dev_server/);
+  const slow = await checkBackend('http://192.168.0.30:8000', (_url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))), 30);
+  assert.equal(slow.ok, false);
+  assert.match(slow.problem, /Can't reach/);
 });
 
 // ---------------------------------------------------------------- simulated squats
@@ -645,4 +740,255 @@ test('fatigue note: slower and/or shallower last reps, sped up, steady, or nothi
   assert.equal(fatigueNote(reps([1000, 1000, 1000, 1000, 800, 800], [80, 80, 80, 80, 80, 80])), 'You sped up: your last reps were 20% quicker.');
   assert.equal(fatigueNote(reps([1000, 1000, 1000, 1000, 1000, 1000], [80, 80, 80, 80, 80, 80])), 'Steady from first rep to last.');
   assert.equal(fatigueNote(reps([1000, 2000, 3000], [80, 90, 100])), null);
+});
+
+
+// ---------------------------------------------------------------- progress (GET /api/stats)
+
+test('getProgress sends the token, the time zone and the week count', async () => {
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true, status: 200, json: async () => ({ streak: { current_days: 3, longest_days: 5 } }) };
+  };
+  const p = await getProgress('http://x:8000/', 'T', { weeks: 8, tzOffsetMinutes: -300 }, impl);
+  assert.equal(p.streak.current_days, 3);
+  assert.equal(calls[0].url, 'http://x:8000/api/stats?tz_offset_minutes=-300&weeks=8');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer T');
+  await assert.rejects(getProgress('http://x', 't', {}, async () => ({ ok: false, status: 401, json: async () => ({}) })), /401/);
+});
+
+test('the time zone offset is minutes EAST of UTC (the opposite of getTimezoneOffset)', () => {
+  assert.equal(localTzOffsetMinutes({ getTimezoneOffset: () => 300 }), -300); // US Eastern
+  assert.equal(localTzOffsetMinutes({ getTimezoneOffset: () => -60 }), 60);
+});
+
+test('numbers and durations are compact', () => {
+  assert.equal(compactNumber(0), '0');
+  assert.equal(compactNumber(1284), '1,284');
+  assert.equal(compactNumber(12_900), '12.9K');
+  assert.equal(compactNumber(250_000), '250K');
+  assert.equal(compactNumber(1_200_000), '1.2M');
+  assert.equal(formatDuration(0), '0m');
+  assert.equal(formatDuration(2700), '45m');
+  assert.equal(formatDuration(12_000), '3h 20m');
+  assert.equal(formatDuration(7200), '2h');
+});
+
+test('exercise names pluralise sensibly', () => {
+  assert.equal(exerciseNoun('squat', 24), 'squats');
+  assert.equal(exerciseNoun('push-up', 1), 'push-up');
+  assert.equal(exerciseNoun('push-up', 10), 'push-ups');
+});
+
+test('the streak hint says what to do today', () => {
+  const now = new Date(2026, 10, 8, 18, 0); // Nov 8, local time
+  const today = new Date(2026, 10, 8, 9, 0).toISOString();
+  const yesterday = new Date(2026, 10, 7, 9, 0).toISOString();
+  const p = (current, longest, workouts, last) => ({ streak: { current_days: current, longest_days: longest }, totals: { workouts, last_workout_at: last } });
+  assert.match(streakHint(p(0, 0, 0, null), now), /first workout/);
+  assert.match(streakHint(p(3, 5, 9, today), now), /Done for today. See you tomorrow/);
+  assert.match(streakHint(p(5, 5, 9, today), now), /best streak yet/);
+  assert.match(streakHint(p(3, 5, 9, yesterday), now), /keep it going/);
+  assert.match(streakHint(p(0, 4, 9, '2026-10-01T12:00:00Z'), now), /best was 4 days/);
+});
+
+test('week labels do not shift with the time zone', () => {
+  assert.equal(shortWeekLabel('2026-11-02'), 'Nov 2');
+});
+
+test('the fastest Rep Racer finish is picked and worded', () => {
+  assert.equal(fastestRace(null), null);
+  assert.equal(fastestRace({ races: 0, finished: 0, fastest: [] }), null);
+  const games = { races: 3, finished: 2, fastest: [
+    { exercise: 'squat', target_reps: 10, duration_ms: 31_000, mode: 'solo', achieved_at: null },
+    { exercise: 'push-up', target_reps: 10, duration_ms: 24_340, mode: 'solo', achieved_at: null },
+  ] };
+  assert.equal(fastestRace(games), '10 push-ups in 24.3 s');
+});
+
+// ---------------------------------------------------------------- workout history
+
+test('history calls hit the right endpoints with the token', async () => {
+  const calls = [];
+  const ok = (body) => async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true, status: 200, json: async () => body };
+  };
+  await listWorkouts('http://x:8000/', 'T', 50, ok([]));
+  await getWorkoutDetail('http://x:8000', 'T', 'sid-1', ok({}));
+  await deleteWorkout('http://x:8000', 'T', 'sid-1', ok(null));
+  assert.equal(calls[0].url, 'http://x:8000/api/workouts?limit=50');
+  assert.equal(calls[1].url, 'http://x:8000/api/workouts/sid-1/summary');
+  assert.equal(calls[2].url, 'http://x:8000/api/workouts/sid-1');
+  assert.equal(calls[2].init.method, 'DELETE');
+  assert.ok(calls.every((c) => c.init.headers.Authorization === 'Bearer T'));
+});
+
+test('a failed delete keeps the server\'s reason (503 = nothing was deleted, try again)', async () => {
+  const res = { ok: false, status: 503, json: async () => ({ detail: 'could not delete the sensor data right now' }) };
+  await assert.rejects(deleteWorkout('http://x', 't', 'sid', async () => res), /^Error: 503 could not delete/);
+});
+
+test('days read Today / Yesterday / a date, in the user\'s own time zone', () => {
+  const now = new Date(2026, 10, 8, 20, 0);
+  assert.equal(dayLabel(new Date(2026, 10, 8, 7, 0).toISOString(), now), 'Today');
+  assert.equal(dayLabel(new Date(2026, 10, 7, 23, 30).toISOString(), now), 'Yesterday');
+  assert.equal(dayLabel(new Date(2026, 10, 3, 12, 0).toISOString(), now), 'Tue, Nov 3');
+  assert.match(dayLabel(new Date(2025, 11, 30, 12, 0).toISOString(), now), /2025/);
+});
+
+test('the list is grouped by day, newest first, order kept', () => {
+  const now = new Date(2026, 10, 8, 20, 0);
+  const at = (d, h) => ({ started_at: new Date(2026, 10, d, h).toISOString(), id: `${d}-${h}` });
+  const groups = groupByDay([at(8, 18), at(8, 9), at(7, 12), at(3, 10)], now);
+  assert.deepEqual(groups.map((g) => g.day), ['Today', 'Yesterday', 'Tue, Nov 3']);
+  assert.deepEqual(groups[0].items.map((i) => i.id), ['8-18', '8-9']);
+});
+
+test('workout length and names read naturally', () => {
+  assert.equal(workoutLength('2026-11-08T10:00:00Z', null), null);
+  assert.equal(workoutLength('2026-11-08T10:00:00Z', '2026-11-08T10:00:45Z'), '45 s');
+  assert.equal(workoutLength('2026-11-08T10:00:00Z', '2026-11-08T10:12:10Z'), '12 min');
+  assert.equal(workoutLength('2026-11-08T10:00:00Z', '2026-11-08T11:05:00Z'), '1 h 5 min');
+  assert.equal(exerciseTitle('push-up'), 'Push-up');
+  assert.equal(noteKind('rep_rejected'), 'not counted');
+  assert.equal(noteKind('recommend_rest'), 'rest');
+  assert.equal(noteKind('send_feedback'), 'cue');
+});
+
+// ---------------------------------------------------------------- "angle over time" from the stored readings (Tiger Data)
+
+const T0 = '2026-11-08T12:00:00.000Z';
+const at = (sec) => new Date(Date.parse(T0) + sec * 1000).toISOString();
+const row = (sec, metric, value, extra = {}) => ({ time: at(sec), source: 'camera', sensor_id: '', metric, value, samples: 3, ...extra });
+
+test('the chart window runs from the workout start to its end, and an unfinished or broken one has none', () => {
+  const w = chartWindow(T0, at(60));
+  assert.equal(w.durationS, 60);
+  assert.ok(Date.parse(w.start) < Date.parse(T0) && Date.parse(w.end) > Date.parse(at(60)));
+  assert.equal(chartWindow(T0, null), null);
+  assert.equal(chartWindow(T0, at(-5)), null);
+  assert.equal(chartWindow('nope', at(5)), null);
+});
+
+test('the bucket size keeps about 240 points per line however long the workout is', () => {
+  assert.equal(bucketSecondsFor(24), 0.1);
+  assert.equal(bucketSecondsFor(120), 0.5);
+  assert.equal(bucketSecondsFor(2400), 10);
+  assert.equal(bucketSecondsFor(1), 0.1);
+});
+
+test('the metrics asked for are the counted joint on both sides plus the three back sections', () => {
+  assert.deepEqual(metricsToFetch('knee'), ['left_knee_angle', 'right_knee_angle', 'spine_lumbar', 'spine_mid', 'spine_upper']);
+  assert.deepEqual(metricsToFetch('elbow').slice(0, 2), ['left_elbow_angle', 'right_elbow_angle']);
+});
+
+test('the left and right sides become one line, in time order, in seconds since the start', () => {
+  const rows = [row(2, 'right_knee_angle', 100), row(1, 'left_knee_angle', 170), row(1, 'right_knee_angle', 160), row(2, 'left_knee_angle', 90)];
+  const c = buildChart(rows, T0, at(10), 'knee');
+  assert.deepEqual(c.angle.points, [{ t: 1, v: 165 }, { t: 2, v: 95 }]);
+  assert.equal(c.angle.label, 'Knee angle');
+  assert.equal(c.durationS, 10);
+  assert.deepEqual(c.back, []);
+});
+
+test('a push-up chart uses the elbow and ignores knee data', () => {
+  const rows = [row(1, 'left_knee_angle', 100), row(1, 'left_elbow_angle', 150), row(1, 'right_elbow_angle', 154)];
+  const c = buildChart(rows, T0, at(5), 'elbow');
+  assert.deepEqual(c.angle.points, [{ t: 1, v: 152 }]);
+  assert.equal(c.angle.label, 'Elbow angle');
+});
+
+test('wearable back sections are separate lines, lower back first, and only the ones that have data', () => {
+  const rows = [row(1, 'spine_upper', 2, { source: 'imu' }), row(2, 'spine_lumbar', 20, { source: 'imu' }), row(1, 'spine_lumbar', 5, { source: 'imu' }), row(1, 'imu_pitch', 30, { source: 'imu' })];
+  const c = buildChart(rows, T0, at(5), 'knee');
+  assert.deepEqual(c.back.map((s) => s.label), ['Lower back', 'Upper back']);
+  assert.deepEqual(c.back[0].points, [{ t: 1, v: 5 }, { t: 2, v: 20 }]); // sorted by time
+  assert.equal(c.angle, null); // no camera data in this workout
+});
+
+test('each saved rep becomes a band on the chart', () => {
+  const reps = [
+    { rep_number: 1, metrics: { started_at: at(1), ended_at: at(3) } },
+    { rep_number: 2, metrics: { started_at: at(4), ended_at: at(6.5) } },
+    { rep_number: 3, metrics: {} }, // an older rep with no recorded window: no band
+  ];
+  const c = buildChart([row(1, 'left_knee_angle', 150)], T0, at(10), 'knee', reps);
+  assert.deepEqual(c.repBands, [{ rep: 1, t0: 1, t1: 3 }, { rep: 2, t0: 4, t1: 6.5 }]);
+});
+
+test('odd rows never crash the chart: NaN values, bad times, unknown metrics', () => {
+  const rows = [row(1, 'left_knee_angle', NaN), { ...row(1, 'left_knee_angle', 100), time: 'garbage' }, row(1, 'something_else', 5), row(2, 'left_knee_angle', 120)];
+  const c = buildChart(rows, T0, at(5), 'knee');
+  assert.deepEqual(c.angle.points, [{ t: 2, v: 120 }]);
+  assert.equal(buildChart([], T0, at(5), 'knee').angle, null);
+});
+
+test('the reading count is the stored samples behind the averaged points', () => {
+  const rows = [row(1, 'left_knee_angle', 100, { samples: 7 }), row(1, 'spine_lumbar', 5, { samples: 5, source: 'imu' })];
+  assert.equal(buildChart(rows, T0, at(5), 'knee').readings, 12);
+});
+
+test('axis ranges are padded and rounded to tidy numbers', () => {
+  assert.deepEqual(niceDomain([88, 171]), [80, 180]);
+  assert.deepEqual(niceDomain([5, 5.5]), [0, 20]); // never a zero-height axis
+  assert.deepEqual(niceDomain([]), [0, 180]);
+  assert.deepEqual(ticks([80, 180], 4), [80, 105, 130, 155, 180]);
+});
+
+test('a line is drawn in the plot box with larger values higher up, and a long gap breaks it', () => {
+  const joined = linePath([{ t: 0, v: 0 }, { t: 1, v: 100 }, { t: 2, v: 50 }], [0, 2], [0, 100], 200, 100);
+  assert.equal(joined, 'M0.0 100.0 L100.0 0.0 L200.0 50.0');
+  const gappy = linePath([{ t: 0, v: 0 }, { t: 5, v: 100 }, { t: 10, v: 50 }], [0, 10], [0, 100], 200, 100); // 5 s gaps (> 1.5 s)
+  assert.equal(gappy, 'M0.0 100.0 M100.0 0.0 M200.0 50.0');
+  assert.equal(linePath([], [0, 1], [0, 1], 10, 10), '');
+  assert.equal(linePath([{ t: 50, v: 1 }], [0, 10], [0, 10], 10, 10), ''); // outside the axis: not drawn
+});
+
+test('formatSeconds reads naturally', () => {
+  assert.deepEqual([formatSeconds(4.4), formatSeconds(59.6), formatSeconds(75), formatSeconds(605)], ['4s', '60s', '1:15', '10:05']);
+});
+
+test('readings are requested downsampled, for one workout, with one metric parameter per series', async () => {
+  const calls = [];
+  const f = async (url, init) => (calls.push({ url, init }), { ok: true, status: 200, json: async () => ({ available: true, readings: [] }) });
+  const out = await getReadings('http://api.test/', 'tok', 'w1', { start: '2026-11-08T11:59:59Z', end: '2026-11-08T12:10:00Z', metrics: ['left_knee_angle', 'spine_lumbar'], bucketSeconds: 0.5 }, f);
+  assert.deepEqual(out, { available: true, readings: [] });
+  const u = new URL(calls[0].url);
+  assert.equal(u.pathname, '/api/workouts/w1/readings');
+  assert.deepEqual(u.searchParams.getAll('metric'), ['left_knee_angle', 'spine_lumbar']);
+  assert.equal(u.searchParams.get('bucket_seconds'), '0.5');
+  assert.equal(u.searchParams.get('limit'), '5000');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer tok');
+});
+
+test('a failed readings request says why, and "not available" is a normal answer, not an error', async () => {
+  const bad = async () => ({ ok: false, status: 404, json: async () => ({ detail: 'session not found' }) });
+  await assert.rejects(getReadings('http://api.test', 't', 'w', { start: 'a', end: 'b', metrics: [], bucketSeconds: 1 }, bad), /404 session not found/);
+  const off = async () => ({ ok: true, status: 200, json: async () => ({ available: false, reason: 'not_configured', readings: [] }) });
+  assert.deepEqual(await getReadings('http://api.test', 't', 'w', { start: 'a', end: 'b', metrics: [], bucketSeconds: 1 }, off), { available: false, reason: 'not_configured', readings: [] });
+});
+
+// ---------------------------------------------------------------- challenges
+
+test('challenges: locked until a counted set, target = best + 1, recorded only where the games tables allow', async () => {
+  const { challengeFor, challengeResultBody, CHALLENGE_TIME_S } = await import('../exercise/challenges.ts');
+  const st = (best, workouts = 1) => ({ exercise: 'squat', workouts, total_reps: best, best_workout_reps: best, last_workout_at: null });
+  assert.deepEqual(challengeFor('squat', undefined), { locked: true, best: 0, target: 1, recorded: true });
+  assert.equal(challengeFor('squat', st(0)).locked, true); // a 0-rep set doesn't unlock
+  assert.deepEqual(challengeFor('squat', st(7)), { locked: false, best: 7, target: 8, recorded: true });
+  assert.equal(challengeFor('jumping-jack', st(20)).recorded, false);
+  assert.equal(challengeFor('push-up', st(100)).recorded, false); // 101 is over the saved limit
+  assert.deepEqual(challengeResultBody('squat', 'sid', 8, 999999), { game: 'rep_racer', mode: 'solo', exercise: 'squat', workout_session_id: 'sid', duration_ms: CHALLENGE_TIME_S * 1000, target_reps: 8, time_limit_s: 180 });
+  assert.equal(challengeResultBody('jumping-jack', 'sid', 8, 1000), null);
+});
+
+test('challenge record: only 3:00 solo rounds count; wins, tries and the current win streak', async () => {
+  const { challengeRecord } = await import('../exercise/challenges.ts');
+  const r = (day, completed, extra = {}) => ({ id: `r${day}`, game: 'rep_racer', mode: 'solo', exercise: 'squat', valid_reps: 8, score: 0, duration_ms: 1, target_reps: 8, time_limit_s: 180, completed, form_feedback: {}, rep_times_ms: [], workout_session_id: null, room_id: null, created_at: `2026-11-0${day}T10:00:00Z`, ...extra });
+  const results = [r(1, false), r(2, true), r(3, true), r(4, true, { time_limit_s: 60 }), r(5, true, { exercise: 'push-up' }), r(6, true, { mode: 'personal_best' })];
+  const rec = challengeRecord(results, 'squat');
+  assert.deepEqual([rec.tries, rec.wins, rec.streak, rec.last.id], [3, 2, 2, 'r3']);
+  assert.deepEqual(challengeRecord([], 'squat'), { tries: 0, wins: 0, streak: 0, last: null });
 });

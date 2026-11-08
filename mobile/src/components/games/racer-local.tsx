@@ -6,19 +6,19 @@ import type { ExerciseController } from '@/games/exercise-controller';
 import { EXERCISES, jointAngle, profileFor, type ExerciseSlug } from '@/games/exercise';
 import { deleteWorkout } from '@/games/games-api';
 import { FaceOff, formatDuration, MAX_TARGET, MAX_TIME_S, MIN_TARGET, MIN_TIME_S, parseSetting, TARGET_PRESETS, TIME_PRESETS_S } from '@/games/racer-engine';
-import { G } from '@/games/theme';
+import { GG as G } from '@/games/theme';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken } from '@/utils/auth';
 
 import { makeController } from './game-session';
 import { MultiPoseCamera, type MultiFrame } from './multi-pose-camera';
 import { RaceTrack, type Lane } from './race-track';
-import { Badge, Body, Btn, Chip, Panel, Row, SectionTitle, Stat, Steps } from './ui';
+import { Badge, Body, Btn, Chip, Panel, Row, SectionTitle, Stat, Steps } from './ui-grits';
 
 type Phase = 'setup' | 'countdown' | 'connecting' | 'racing' | 'results';
 const NAMES = ['Player 1 (left)', 'Player 2 (right)'] as const;
 const COLORS = [G.green, G.blue] as const;
-const inputStyle = { backgroundColor: '#0f1315', color: G.text, borderColor: G.line, borderWidth: 1, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12, width: 90, fontSize: 15 } as const;
+const inputStyle = { backgroundColor: G.panelHi, color: G.text, borderColor: G.line, borderWidth: 2, borderRadius: 14, paddingVertical: 8, paddingHorizontal: 12, width: 90, fontSize: 15, fontWeight: '600' } as const;
 
 /**
  * Local 2-player: two people race side by side in front of ONE camera on this computer. MediaPipe tracks both; each

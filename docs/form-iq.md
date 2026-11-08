@@ -28,6 +28,26 @@ The counter already refused partial and too-fast attempts; it now says why, and 
   reached the bottom. Smaller dips (shifting weight, camera jitter) are ignored silently, as before.
 * `too_fast`: it reached the bottom, but the whole attempt took less than the exercise's minimum rep time
   (800 ms squat, 600 ms push-up).
+* **One attempt per descent.** An attempt only ends once the user has held the top for 250 ms. Wobbling around the
+  top threshold, or dipping straight back down, is still the same attempt (and still becomes a rep if it then reaches
+  the bottom), so one movement is never reported more than once.
+
+## Glitch guard
+
+Pose tracking sometimes returns nonsense for a few frames. Seen on a real push-up set: one elbow at 18° while the
+other read 174°, and 60° jumps that reverse within one frame. Before this guard, that noise counted 3 extra push-ups
+within 2 seconds and produced about 14 bogus "didn't count" messages. Before any angle reaches the counter:
+
+1. A side below 30° is dropped: no knee or elbow in these exercises reads that.
+2. If left and right differ by more than 40°, one side is mistracked: the counter keeps the side closer to the
+   recent angle. Those frames also don't count as left/right asymmetry.
+3. The counter runs on the **median of the last 5 usable frames**, so a spike of 1-2 frames can never cross a
+   threshold or set the recorded depth.
+4. Any attempt shorter than 300 ms is a glitch: never counted and never reported.
+
+On the real push-up set above, this took the result from 6 reps and 20 rejections to 3 reps and 6 rejections.
+All values are in `SquatConfig` (`min_plausible_deg`, `max_side_gap_deg`, `smoothing_frames`, `top_hold_ms`,
+`glitch_ms`) and are untuned.
 
 The server sends `rep_rejected` (reason, message, deepest angle, joint, duration; `rep_count` unchanged) and saves it
 to `coaching_events` with `action: "rep_rejected"`, so it shows in the workout summary and the report. Format:

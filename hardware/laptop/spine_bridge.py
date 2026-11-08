@@ -4,13 +4,18 @@ Spine bridge: reads the base station (or a USB wearable) on this laptop and stre
 backend, which stores it and shows it live in the app. No browser needed, so it works with the app on a phone.
 
 Setup (once):   pip install -r requirements.txt
-Run:            python spine_bridge.py --server http://192.168.1.20:8000
-                (finds the base station by itself and waits for it to be plugged in; --port COM5 forces a port;
-                 --code ABCD-2345 skips the prompt)
+Run:            python spine_bridge.py
+                then paste the line the app shows under the pairing code, e.g.
+                python hardware/laptop/spine_bridge.py --server http://192.168.1.20:8000 --code ABCD-2345
+                (or run that line directly). The bridge finds the base station by itself and waits for it to be
+                plugged in; --port COM5 forces a port. The last server that worked is remembered.
 
-In the app: start a workout, press "Pair laptop bridge", and type the code it shows here. The bridge follows
-that workout until it finishes, then asks for the next code. Recalibrate from the app. Ctrl+C stops.
+In the app: start a workout, press "Pair laptop bridge"; it shows the code AND the server address to use. The
+bridge follows that workout until it finishes, then asks for the next code. Recalibrate from the app. Ctrl+C stops.
 Your password never goes to this script: the code pairs it with one workout.
+
+"localhost" means THIS laptop. If the server runs on another computer, use that computer's address (the app shows
+it); the bridge checks the address first and says exactly what is wrong if it can't connect.
 """
 
 from __future__ import annotations
@@ -19,9 +24,16 @@ import argparse
 import asyncio
 import json
 import math
+import os
+import re
+import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from urllib.parse import urlsplit
 
 # The server's limits (server/app/schemas/sensors.py). An out-of-range value would get the message rejected.
 LIMITS = {
@@ -105,6 +117,142 @@ def to_ws_url(server: str) -> str:
     if s.startswith("http://"):
         return "ws://" + s[len("http://"):]
     return s if s.startswith(("ws://", "wss://")) else "ws://" + s
+
+
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+URL_RE = re.compile(r"(?:https?|wss?)://[^\s'\"<>]+", re.IGNORECASE)
+HEALTH_TIMEOUT_S = 4.0
+MAX_BACKOFF_S = 10.0
+CONFIG_PATH = Path.home() / ".sharkbyte_bridge.json"
+
+
+def is_loopback(host: str | None) -> bool:
+    h = (host or "").strip("[]").lower()
+    return h in LOOPBACK_HOSTS or h.startswith("127.")
+
+
+def normalize_server(text: str | None) -> str | None:
+    """'192.168.1.20:8000', 'http://x:8000/', '"http://x:8000"' -> 'http://x:8000'. None if it isn't an address."""
+    s = (text or "").strip().strip("'\"")
+    if not s:
+        return None
+    if "://" not in s:
+        s = "http://" + s  # the result is rebuilt from scheme + host:port, so a trailing slash or path drops off
+    parts = urlsplit(s)
+    scheme = {"ws": "http", "wss": "https"}.get(parts.scheme.lower(), parts.scheme.lower())
+    if scheme not in ("http", "https") or not parts.hostname:
+        return None
+    try:
+        parts.port  # noqa: B018 - raises ValueError for a bad port
+    except ValueError:
+        return None
+    return f"{scheme}://{parts.netloc}"
+
+
+def parse_pairing_input(text: str) -> tuple[str | None, str | None]:
+    """What the user typed or pasted -> (server address or None, pairing code or None).
+
+    Accepts a bare code ('abcd-2345'), a bare address, or the whole command line the app shows
+    ('python ... --server http://192.168.1.20:8000 --code ABCD-2345')."""
+    s = (text or "").strip()
+    server = None
+    m = re.search(r"--server[ =]+(\S+)", s)
+    if m:
+        server = normalize_server(m.group(1))
+    else:
+        u = URL_RE.search(s)
+        if u:
+            server = normalize_server(u.group(0))
+    rest = re.sub(r"--server[ =]+\S+", " ", URL_RE.sub(" ", s))  # host names can contain dashes: look elsewhere
+    code = None
+    m = re.search(r"--code[ =]+(\S+)", rest)
+    if m:
+        code = m.group(1)
+    else:
+        m = re.search(r"(?<![A-Za-z0-9])([A-Za-z0-9]{4}-[A-Za-z0-9]{4})(?![A-Za-z0-9])", rest)
+        if m:
+            code = m.group(1)
+        else:
+            words = rest.split()
+            if len(words) == 1 and len(re.sub(r"[^A-Za-z0-9]", "", words[0])) == 8:
+                code = words[0]
+            elif server is None and len(words) == 1:
+                server = normalize_server(words[0]) if ("." in words[0] or ":" in words[0]) else None
+    return server, code
+
+
+def explain_unreachable(server: str, reason: object, timeout: float = HEALTH_TIMEOUT_S) -> tuple[str, bool]:
+    """Why ``server`` can't be reached, in plain words -> (message, ask for a different address?)."""
+    parts = urlsplit(server)
+    host = parts.hostname or "?"
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    text = str(reason).lower()
+    winerror = getattr(reason, "winerror", None)
+    refused = isinstance(reason, ConnectionRefusedError) or winerror in (10061, 1225) or "refused" in text
+    timed_out = isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in text or winerror == 10060
+    # No firewall stands between a computer and itself, and Windows takes ~2 s to refuse a closed local port: a
+    # localhost timeout means the same as a refusal, nothing is running here.
+    if refused or (timed_out and is_loopback(host)):
+        if is_loopback(host):
+            return (
+                f"Nothing is running at {host}:{port} on THIS laptop. 'localhost' means this computer, not the one\n"
+                "running the server. Use the server's address shown in the app under the pairing code\n"
+                "(for example http://192.168.1.20:8000).",
+                True,
+            )
+        return (
+            f"{host} refused port {port}. Either the server isn't running there, or it only accepts connections from\n"
+            "its own computer. On the server computer start it with:  python -m scripts.dev_server   (from server/)\n"
+            "(plain 'uvicorn app.main:app' needs --host 0.0.0.0). Also check the port: the API is usually 8000;\n"
+            "8081/8080 is the app's web page, not the API. Retrying...",
+            False,
+        )
+    if timed_out:
+        return (
+            f"No answer from {host}:{port} after {timeout:.0f} s. Usually the server computer's firewall is blocking\n"
+            f"port {port}: on Windows allow Python through 'Windows Defender Firewall -> Allow an app' for Private\n"
+            "networks (and make sure the Wi-Fi is set to Private). Or the two computers are on different networks:\n"
+            "guest/campus Wi-Fi often blocks computer-to-computer traffic (a phone hotspot works). Retrying...",
+            False,
+        )
+    if isinstance(reason, socket.gaierror) or "getaddrinfo" in text or "name or service" in text:
+        return (f"Can't find a computer called '{host}'. Check the address the app shows.", True)
+    if winerror in (10051, 10065) or "unreachable" in text:
+        return (f"{host} is on a network this laptop can't reach. Are both computers on the same Wi-Fi? Retrying...", False)
+    return (f"Can't reach {server} ({reason}). Retrying...", False)
+
+
+def check_server(server: str, timeout: float = HEALTH_TIMEOUT_S) -> tuple[str | None, bool]:
+    """Ask the server's /health -> (None, False) if it is the SharkByte API; else (what's wrong, ask for a new address?)."""
+    try:
+        with urllib.request.urlopen(f"{server}/health", timeout=timeout) as r:
+            body = json.loads(r.read().decode() or "{}")
+        if isinstance(body, dict) and body.get("status") == "ok":
+            return None, False
+        return (f"{server} answered, but it isn't the SharkByte API (wrong port? the API is usually 8000).", True)
+    except urllib.error.HTTPError as e:
+        return (f"{server} answered HTTP {e.code} on /health: that isn't the SharkByte API (wrong port? the API is "
+                "usually 8000; 8081/8080 is the app's web page).", True)
+    except urllib.error.URLError as e:
+        return explain_unreachable(server, e.reason, timeout)
+    except (OSError, ValueError) as e:  # timeouts can arrive unwrapped; ValueError = not JSON
+        if isinstance(e, ValueError) and not isinstance(e, OSError):
+            return (f"{server} answered, but it isn't the SharkByte API (wrong port? the API is usually 8000).", True)
+        return explain_unreachable(server, e, timeout)
+
+
+def load_saved_server(path: Path = CONFIG_PATH) -> str | None:
+    try:
+        return normalize_server(json.loads(path.read_text()).get("server"))
+    except Exception:
+        return None
+
+
+def save_server(server: str, path: Path = CONFIG_PATH) -> None:
+    try:
+        path.write_text(json.dumps({"server": server}))
+    except OSError:
+        pass  # remembering is a convenience only
 
 
 class Streamer:
@@ -302,8 +450,11 @@ class Bridge:
         self.args = args
         self.link = link
         self.serial_mod, self.list_ports, self.port = serial_mod, list_ports, port  # to find the port again after a replug
-        self.ws_url = to_ws_url(args.server) + "/ws/sensors"
-        self.code: str | None = args.code
+        self.server: str | None = normalize_server(getattr(args, "server", None))
+        self.server_explicit = bool(getattr(args, "server_explicit", self.server is not None))  # typed on the command line
+        self.reachable = False  # /health answered at self.server
+        self.remember = None  # callable(server) to save the last good address (main() sets it; tests don't)
+        self.code: str | None = getattr(args, "code", None)
         self.token: str | None = None
         self.session_id: str | None = None
         self.streamer: Streamer | None = None
@@ -311,6 +462,26 @@ class Bridge:
         self.last_note: str | None = None
         self.calibrating = False
         self.hint_shown = False  # the "not paired yet" message, shown once instead of a live line
+        self.backoff_s = 1.0
+        self.last_problem: tuple[str, float] | None = None  # (message, when shown): don't repeat it every retry
+
+    def _say_problem(self, message: str) -> None:
+        now = time.monotonic()
+        if self.last_problem is None or self.last_problem[0] != message or now - self.last_problem[1] >= 30:
+            print(f"\n{message}")
+            self.last_problem = (message, now)
+
+    async def _wait_backoff(self) -> None:
+        await asyncio.sleep(self.backoff_s)
+        self.backoff_s = min(self.backoff_s * 2, MAX_BACKOFF_S)
+
+    def _take_input(self, text: str) -> None:
+        """A typed/pasted line: may carry a new server address, a code, or both."""
+        server, code = parse_pairing_input(text)
+        if server and server != self.server:
+            self.server, self.server_explicit, self.reachable = server, True, False
+        if code:
+            self.code = code
 
     async def run(self) -> None:
         """Until the serial port fails or another bridge takes over (or Ctrl+C)."""
@@ -322,19 +493,51 @@ class Bridge:
             t.result()  # re-raise a crash instead of hiding it
 
     async def server_loop(self) -> None:
+        """Server address -> reachable? -> code -> paired session; every failure says why and backs off (max 10 s)."""
         import websockets
 
         while True:
-            if self.token is None and self.code is None:
-                self.code = (await ask("\nPairing code (in the app: Pair laptop bridge): ")).strip()
-                if not self.code:
+            # 1) An address. Never assumed: 'localhost' is only right when the server runs on this same laptop.
+            if self.server is None:
+                self._take_input(await ask(
+                    "\nServer address (the app shows it under the pairing code, e.g. http://192.168.1.20:8000)\n"
+                    "or paste the whole line the app shows: "
+                ))
+                if self.server is None:
+                    print("That isn't an address. It looks like http://192.168.1.20:8000 (the app shows it).")
+                continue
+
+            # 2) Is the SharkByte API really there? Checked before pairing, so a wrong address or a blocked port is
+            #    explained instead of failing as a vague 'connection refused' over and over.
+            if not self.reachable:
+                problem, ask_again = await in_daemon_thread(check_server, self.server)
+                if problem:
+                    self._say_problem(problem)
+                    if ask_again:  # the address itself is wrong (not just 'not up yet'): ask for the right one
+                        self.server, self.server_explicit = None, False
+                    else:
+                        await self._wait_backoff()
                     continue
+                self.reachable, self.last_problem, self.backoff_s = True, None, 1.0
+                print(f"\nServer found at {self.server}.")
+                if self.remember:
+                    self.remember(self.server)
+
+            # 3) A code (or a token from an earlier pairing).
+            if self.token is None and self.code is None:
+                self._take_input(await ask("\nPairing code from the app (or paste the whole line the app shows): "))
+                if self.code is None:
+                    print("No code in that. It looks like ABCD-2345 (in the app: Pair laptop bridge).")
+                continue  # re-check: the paste may have changed the server too
+
+            # 4) Pair (or reconnect) and stream.
             try:
-                async with websockets.connect(self.ws_url, open_timeout=10, max_size=65536) as ws:
+                async with websockets.connect(to_ws_url(self.server) + "/ws/sensors", open_timeout=10, max_size=65536) as ws:
                     if not await self.handshake(ws):
                         self.code = None
+                        await self._wait_backoff()
                         continue
-                    self.ws = ws
+                    self.ws, self.backoff_s = ws, 1.0
                     try:
                         await self.receive(ws)
                     finally:
@@ -347,8 +550,10 @@ class Bridge:
                 if not self.closed_with(e.rcvd.code if e.rcvd else None):
                     return
             except (OSError, asyncio.TimeoutError, websockets.InvalidURI, websockets.InvalidHandshake) as e:
-                print(f"\nCan't reach the server at {self.args.server} ({e}). Retrying in 3 s...")
-                await asyncio.sleep(3)
+                self.ws, self.reachable = None, False  # re-diagnose with /health on the next round
+                self._say_problem(f"Lost the server at {self.server} ({e}). Checking it again...")
+            if self.token is not None:  # reconnecting with the token: don't hammer a server that keeps dropping us
+                await self._wait_backoff()
 
     async def handshake(self, ws) -> bool:
         auth = {"schema_version": 1, "type": "sensor_auth"}
@@ -375,7 +580,9 @@ class Bridge:
             print("\nAnother bridge took over this workout. Stopping.")
             return False
         if code == CLOSE_UNAUTHENTICATED and self.session_id is None:
+            # Never retry the same code: it can't start working, and every retry counts as a wrong guess.
             print("\nThat code didn't work (wrong, already used, or expired). Get a new one in the app.")
+            self.code = None
         elif code in (CLOSE_NOT_ACTIVE, CLOSE_NOT_FOUND):
             print("\nThe workout ended. Start another one in the app to keep streaming.")
         elif code == CLOSE_UNAUTHENTICATED:
@@ -389,7 +596,12 @@ class Bridge:
 
     async def receive(self, ws) -> None:
         async for raw in ws:
-            msg = json.loads(raw)
+            try:
+                msg = json.loads(raw)
+            except (TypeError, ValueError):
+                continue  # never crash the bridge over one odd message
+            if not isinstance(msg, dict):
+                continue
             if msg.get("type") == "device_command" and msg.get("command") == "recalibrate":
                 self.link.send(b"c")
                 print("\n-> recalibration requested from the app")
@@ -505,12 +717,20 @@ def show(d: dict[str, float], sending: bool) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stream the spine wearable from this laptop to the SharkByte backend")
-    parser.add_argument("--server", default="http://localhost:8000", help="the backend's address, as the app uses it")
+    parser.add_argument(
+        "--server",
+        help="the backend's address, as shown in the app under the pairing code (e.g. http://192.168.1.20:8000). "
+        "Without it: $SHARKBYTE_SERVER, else the last address that worked, else you're asked.",
+    )
     parser.add_argument("--port", help="serial port of the base station, e.g. COM5 or /dev/ttyUSB0")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--code", help="pairing code from the app (otherwise you're asked for it)")
     parser.add_argument("--raw", action="store_true", help="print every raw line from the base station")
     args = parser.parse_args()
+    if args.server and normalize_server(args.server) is None:
+        sys.exit(f"--server {args.server!r} isn't an address. It looks like http://192.168.1.20:8000")
+    args.server_explicit = bool(args.server or os.environ.get("SHARKBYTE_SERVER"))
+    args.server = args.server or os.environ.get("SHARKBYTE_SERVER") or load_saved_server()
 
     try:
         import serial
@@ -523,13 +743,15 @@ def main() -> None:
         ser, port = open_base_station(serial, list_ports, args.port, args.baud)  # waits until it's plugged in
     except KeyboardInterrupt:
         sys.exit("\nStopped.")
-    print(f"Reading the wearable on {port}. Server: {args.server}")
+    where = args.server or "not set yet (you'll be asked)"
+    print(f"Reading the wearable on {port}. Server: {where}{'' if args.server_explicit or not args.server else ' (remembered)'}")
     print("Ctrl+C stops.")
     state: dict = {}
 
     async def go() -> None:
         link = state["link"] = SerialLink(ser, asyncio.get_running_loop())
         bridge = Bridge(args, link, serial, list_ports, port)
+        bridge.remember = save_server
         await bridge.run()
 
     try:

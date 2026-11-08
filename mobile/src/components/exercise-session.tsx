@@ -1,13 +1,15 @@
 import { router, type Href } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { GRITS_MAX_WIDTH, GritsButton, GritsHeader, GritsScreen, Ink, Plate } from '@/components/grits-ui';
 import { PoseCamera, type PoseFrameInfo } from '@/components/pose-camera';
 import { LiveWave, RepBars } from '@/components/rep-wave';
+import { SpineFigure } from '@/components/spine-figure';
 import { TrendBubbles } from '@/components/trend-bubbles';
 import { Grits } from '@/constants/grits';
 import { EXERCISES, exerciseInfo, type ExerciseInfo } from '@/exercise/catalog';
+import { challengeResultBody } from '@/exercise/challenges';
 import { JumpingJackCounter } from '@/exercise/jumping-jack';
 import { formatDuration, summarizeSet, type SetSummary } from '@/exercise/summary';
 import { fatigueNote, repBars, waveValue, type Bar, type RepRecord } from '@/exercise/wave';
@@ -24,8 +26,11 @@ import {
   type CoachReport,
   type Trends,
 } from '@/pose/workout-client';
+import { saveGameResult } from '@/games/games-api';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken } from '@/utils/auth';
+import { explainConnectionError, START_COMMAND } from '@/utils/backend-health';
+import { CAN_COPY, copyText } from '@/utils/clipboard';
 
 /**
  * One set of one exercise. Two independent state machines:
@@ -41,6 +46,10 @@ type SpineState = 'off' | 'pairing' | 'calibrating' | 'on';
 const CALIBRATING = 'wearable calibrating';
 const CALIBRATION_FALLBACK_MS = 12000; // if the bridge's notes are missed, live readings this long after Recalibrate will do
 const NATIVE = Platform.OS !== 'web';
+// A dropped socket is reopened with a fresh token (the server seeds the counter from the saved reps, so nothing is
+// lost). These closes mean the workout itself is over or taken over, so reconnecting would be wrong.
+const FINAL_CLOSE_CODES = new Set([4404, 4409, 4410]);
+const MAX_RECONNECTS = 6;
 export const CHALLENGE_MS = 3 * 60 * 1000; // challenges: beat your best + 1 within 3:00
 
 /** Wall-clock ms. Only ever called from event handlers and effects, never while rendering. */
@@ -71,11 +80,15 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
   const [spine, setSpineState] = useState<SpineState>(startWithSpine ? 'pairing' : 'off');
   const [error, setError] = useState<string | null>(null);
   const [code, setCode] = useState<string | null>(null);
+  const [pairCommand, setPairCommand] = useState<string | null>(null);
+  const [pairWarning, setPairWarning] = useState<string | null>(null);
   const [bridge, setBridge] = useState(false);
   const [spineNote, setSpineNote] = useState<string | null>(null);
   const [reps, setReps] = useState(0);
   const [cue, setCue] = useState<string | null>(null);
-  const [connection, setConnection] = useState<'idle' | 'connecting' | 'connected' | 'lost'>('idle');
+  const [connection, setConnection] = useState<'idle' | 'connecting' | 'connected' | 'reconnecting' | 'lost'>('idle');
+  const [copied, setCopied] = useState(false);
+  const [help, setHelp] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [lastSpine, setLastSpine] = useState<SpineData | null>(null);
   const [summary, setSummary] = useState<SetSummary | null>(null);
@@ -83,6 +96,7 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
   const [report, setReport] = useState<CoachReport | 'loading' | 'unavailable' | null>(null);
   const [trends, setTrends] = useState<Trends | 'loading' | 'error' | null>(null);
   const [wave, setWave] = useState<{ bars: Bar[]; note: string | null } | null>(null);
+  const [challengeSaved, setChallengeSaved] = useState<'saving' | 'saved' | 'failed' | 'unrecorded' | null>(null);
   const [pulse] = useState(() => new Animated.Value(1));
   const setVariant = EXERCISES.findIndex((e) => e.slug === info.slug) + 2;
   const [resultsVariant] = useState(() => 1 + Math.floor(Math.random() * 6)); // a fresh field after every set
@@ -110,6 +124,7 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
   const waveRef = useRef<number | null>(null);
   const backTimedRef = useRef<{ t: number; lumbar: number }[]>([]);
   const lastJackAtRef = useRef(0);
+  const reconnectRef = useRef<{ attempts: number; timer: ReturnType<typeof setTimeout> | null }>({ attempts: 0, timer: null });
 
   const go = (p: Phase) => {
     phaseRef.current = p;
@@ -142,6 +157,7 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
     switch (e.type) {
       case 'session_ready':
         setConnection('connected');
+        reconnectRef.current.attempts = 0;
         if (e.sensor_connected) {
           bridgeRef.current = true;
           setBridge(true);
@@ -193,23 +209,53 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
     }
   };
 
-  /** Creates the workout and opens its socket (once). */
-  const ensureWorkout = async (): Promise<string> => {
-    if (sessionRef.current) return sessionRef.current;
-    const apiUrl = getApiUrl();
-    const token = await getAccessToken();
-    const w = await createWorkout(apiUrl, token, info.slug);
-    sessionRef.current = w.session_id;
-    streamerRef.current = new PoseStreamer(w.session_id);
-    setConnection('connecting');
-    const socket = new WorkoutSocket(apiUrl, w.session_id, token, {
+  /** Opens (or reopens) the workout's socket with a fresh token. */
+  const openSocket = async (sid: string) => {
+    const socket = new WorkoutSocket(getApiUrl(), sid, await getAccessToken(), {
       onEvent,
-      onClose: () => setConnection('lost'),
-      onError: () => setConnection('lost'),
+      onClose: (code) => onSocketClose(code),
+      onError: () => {}, // the browser fires close right after error; that one does the work
     });
     socketRef.current = socket;
     socket.connect();
+  };
+
+  /** The socket went away. Unless the workout itself is over, come back with a short, growing pause between tries. */
+  const onSocketClose = (code: number) => {
+    const r = reconnectRef.current;
+    const sid = sessionRef.current;
+    if (!sid || finishedRef.current || FINAL_CLOSE_CODES.has(code) || r.attempts >= MAX_RECONNECTS) {
+      setConnection('lost');
+      return;
+    }
+    setConnection('reconnecting');
+    const delay = Math.min(8000, 1000 * 2 ** r.attempts);
+    r.attempts += 1;
+    if (r.timer) clearTimeout(r.timer);
+    r.timer = setTimeout(() => {
+      r.timer = null;
+      if (finishedRef.current) return;
+      void openSocket(sid).catch(() => onSocketClose(1006)); // e.g. the token could not be refreshed: try again later
+    }, delay);
+  };
+
+  /** Creates the workout and opens its socket (once). */
+  const ensureWorkout = async (): Promise<string> => {
+    if (sessionRef.current) return sessionRef.current;
+    const w = await createWorkout(getApiUrl(), await getAccessToken(), info.slug);
+    sessionRef.current = w.session_id;
+    streamerRef.current = new PoseStreamer(w.session_id);
+    setConnection('connecting');
+    await openSocket(w.session_id);
     return w.session_id;
+  };
+
+  const copyCommand = async () => {
+    if (!pairCommand) return;
+    if (await copyText(pairCommand)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   // ---- the Spine pill ----
@@ -230,6 +276,8 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
       }
       const r = await getSensorCode(getApiUrl(), await getAccessToken(), sid);
       setCode(r.code);
+      setPairCommand(r.bridge_command); // the server's address as the bridge laptop must use it (never this app's localhost)
+      setPairWarning(r.warning);
     } catch (e) {
       setSpine('off');
       setSpineNote(`Couldn't start pairing: ${messageOf(e)}`);
@@ -258,9 +306,11 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
   useEffect(
     () => () => {
       const sid = sessionRef.current;
+      if (reconnectRef.current.timer) clearTimeout(reconnectRef.current.timer);
+      const needsFinish = !!sid && !finishedRef.current;
+      finishedRef.current = true; // also stops the socket's close (which fires after this) from reconnecting
       socketRef.current?.close();
-      if (sid && !finishedRef.current) {
-        finishedRef.current = true;
+      if (sid && needsFinish) {
         void getAccessToken()
           .then((t) => finishWorkout(getApiUrl(), t, sid))
           .catch(() => {}); // best effort; the server also cleans up abandoned workouts
@@ -371,6 +421,24 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
     );
     go('results');
     if (!sid || problem) return;
+    // A challenge goes on the record (a Rep Racer solo round with the 3:00 limit), scored by the server from this
+    // workout's own counted reps. Jumping jacks can't be recorded yet (the games tables take squats and push-ups).
+    if (challengeTarget !== null) {
+      const body = challengeResultBody(info.slug, sid, challengeTarget, durationMs);
+      if (!body) {
+        setChallengeSaved('unrecorded');
+      } else {
+        setChallengeSaved('saving');
+        void (async () => {
+          try {
+            await saveGameResult(getApiUrl(), await getAccessToken(), body);
+            setChallengeSaved('saved');
+          } catch {
+            setChallengeSaved('failed');
+          }
+        })();
+      }
+    }
     // The trend (this set against your others) and the coach's write-up load side by side; neither blocks the other.
     setTrends('loading');
     void (async () => {
@@ -400,17 +468,35 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
   // ---- screens ----
 
   if (phase === 'error') {
+    const friendly = explainConnectionError(getApiUrl(), error ?? '');
     return (
       <GritsScreen bubbles="set">
         <GritsHeader title={info.label} back={info.label} onBack={toIntro} />
         <Ink size={18} weight="700">
           Something got in the way.
         </Ink>
-        <Ink soft style={{ marginTop: 6 }}>
-          {error}
-        </Ink>
+        <View testID="session-error">
+          <Ink style={{ marginTop: 6 }}>{friendly.problem}</Ink>
+        </View>
+        {friendly.fix ? (
+          <View style={styles.card} testID="session-error-fix">
+            <Ink weight="800" size={15}>
+              What usually fixes it
+            </Ink>
+            <Ink soft size={14}>
+              {friendly.fix}
+            </Ink>
+          </View>
+        ) : null}
         <View style={styles.row}>
-          <GritsButton label="Back" onPress={toIntro} />
+          <GritsButton
+            label="Try again"
+            onPress={() => {
+              setError(null);
+              go('ready');
+            }}
+          />
+          <GritsButton label="Back" tone="ghost" onPress={toIntro} />
         </View>
       </GritsScreen>
     );
@@ -430,6 +516,22 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
                   ? `No reps counted this time. The target is ${challengeTarget}: make sure the camera can see you.`
                   : `${summary.reps} of ${challengeTarget}: ${challengeTarget - summary.reps} short. Rest up and go again.`}
             </Text>
+            {challengeSaved && (
+              <Text style={styles.verdictNote} testID="challenge-saved">
+                {challengeSaved === 'saved'
+                  ? 'On your challenge record.'
+                  : challengeSaved === 'saving'
+                    ? 'Saving to your record…'
+                    : challengeSaved === 'failed'
+                      ? 'Couldn’t save this one to your record.'
+                      : 'Played for fun: jumping-jack challenges aren’t recorded yet.'}
+              </Text>
+            )}
+          </View>
+        )}
+        {challengeTarget !== null && (
+          <View style={styles.row}>
+            <GritsButton label="All challenges" tone="ghost" onPress={() => router.replace('/challenges' as Href)} />
           </View>
         )}
         <View style={styles.resultTop}>
@@ -506,6 +608,8 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
   const live = phase === 'live';
   const spineBusy = spine === 'pairing' || spine === 'calibrating';
   const bubble = Math.min(column * 0.3, 118);
+  const showFigure = spine === 'on' && lastSpine !== null;
+  const figure = Math.min(column * 0.3, 112);
 
   return (
     <GritsScreen bubbles="set" variant={setVariant}>
@@ -551,10 +655,17 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
           style={({ pressed }) => [styles.spinePill, spine === 'on' && { backgroundColor: Grits.sageDeep }, pressed && styles.pressed, phase !== 'ready' && { opacity: 0.6 }]}>
           <Text style={styles.spinePillText}>{spine === 'off' ? 'Spine' : spine === 'on' ? 'Spine ✓' : spine === 'pairing' ? 'Spine · pairing' : 'Spine · calibrating'}</Text>
         </Pressable>
-        <View style={styles.spineData} testID="session-spine-data">
-          <Text style={styles.spineDataText} numberOfLines={2}>
-            {spineDataText(spine, lastSpine, spineNote, code, live)}
-          </Text>
+        <View style={styles.spineDataRow}>
+          {showFigure && lastSpine && (
+            <Plate size={figure}>
+              <SpineFigure data={lastSpine} size={figure * 0.86} />
+            </Plate>
+          )}
+          <View style={styles.spineData} testID="session-spine-data">
+            <Text style={styles.spineDataText} numberOfLines={showFigure ? 4 : 2}>
+              {spineDataText(spine, lastSpine, spineNote, code, live)}
+            </Text>
+          </View>
         </View>
       </View>
 
@@ -566,14 +677,26 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
                 Pair the spine wearable
               </Ink>
               <Ink soft size={14}>
-                On the laptop with the base station plugged in, run the bridge with this code:
+                On the laptop with the base station plugged in, run this line (or run the bridge and paste it):
               </Ink>
               <Text style={styles.code} selectable testID="session-pair-code">
                 {code ?? '····-····'}
               </Text>
-              <Text style={styles.command} selectable>
-                python hardware/laptop/spine_bridge.py --server http://localhost:8080 --code {code ?? 'XXXX-XXXX'}
+              <Text style={styles.command} selectable testID="session-pair-command">
+                {pairCommand ?? 'Getting the pairing details…'}
               </Text>
+              {CAN_COPY && pairCommand && (
+                <View style={styles.rowTight}>
+                  <GritsButton label={copied ? 'Copied ✓' : 'Copy the line'} tone={copied ? 'sage' : 'ghost'} onPress={() => void copyCommand()} testID="session-pair-copy" />
+                </View>
+              )}
+              {pairWarning && (
+                <View style={styles.warn} testID="session-pair-warning">
+                  <Ink size={14} weight="700">
+                    {pairWarning}
+                  </Ink>
+                </View>
+              )}
               <Ink soft size={14}>
                 {bridge ? 'Bridge connected.' : 'Waiting for the bridge… calibration starts by itself.'}
               </Ink>
@@ -602,6 +725,30 @@ function Session({ info, startWithSpine, challengeTarget }: { info: ExerciseInfo
         <Ink soft center style={{ marginTop: 6 }}>
           {info.setup} Start the camera, then start the set and go until you&apos;re tired.
         </Ink>
+      )}
+      {phase === 'ready' && (
+        <View style={styles.helpWrap}>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: help }} onPress={() => setHelp((h) => !h)} testID="session-help-toggle" hitSlop={8}>
+            <Text style={styles.helpLink}>{help ? 'Hide help ▴' : 'Something not working? ▾'}</Text>
+          </Pressable>
+          {help && (
+            <View style={styles.card} testID="session-help">
+              <HelpItem title="No camera picture">Allow the camera when the browser asks. The camera needs http://localhost or https://; a plain http://192.168… address won&apos;t get it.</HelpItem>
+              <HelpItem title="Start does nothing, or the set won't save">
+                The backend isn&apos;t reachable. On the backend computer run {START_COMMAND} from server/. The home screen&apos;s pill shows which address this app is calling.
+              </HelpItem>
+              <HelpItem title="The laptop bridge is refused">Use the line shown under the pairing code, not localhost: on the bridge laptop, localhost is that laptop. The bridge explains what&apos;s wrong if it can&apos;t connect.</HelpItem>
+              <HelpItem title="Reps aren't counting">Stand side-on, whole body in view, a couple of steps back. Only full reps count; a shallow one is told to you, not counted.</HelpItem>
+            </View>
+          )}
+        </View>
+      )}
+      {connection === 'reconnecting' && live && (
+        <View testID="session-reconnecting">
+          <Ink weight="700" center style={{ marginTop: 6 }}>
+            Connection dropped. Reconnecting… keep going, saved reps are safe.
+          </Ink>
+        </View>
       )}
       {connection === 'lost' && live && (
         <Ink weight="700" center style={{ marginTop: 6 }}>
@@ -634,6 +781,19 @@ function spineDataText(spine: SpineState, d: SpineData | null, note: string | nu
   return `lower ${fmtDeg(d.spine_lumbar_deg)} · mid ${fmtDeg(d.spine_mid_deg)} · upper ${fmtDeg(d.spine_upper_deg)} · lean ${fmtDeg(d.imu_pitch_deg)}`;
 }
 
+function HelpItem({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <View style={{ gap: 2 }}>
+      <Ink weight="800" size={15}>
+        {title}
+      </Ink>
+      <Ink soft size={14}>
+        {children}
+      </Ink>
+    </View>
+  );
+}
+
 const capitalize = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const fmtDeg = (v: number | null | undefined) => (typeof v === 'number' ? `${v > 0 ? '+' : ''}${v.toFixed(0)}°` : '–');
 
@@ -647,14 +807,20 @@ const styles = StyleSheet.create({
   challengeBanner: { alignSelf: 'flex-start', backgroundColor: Grits.orange, borderRadius: 999, paddingVertical: 8, paddingHorizontal: 16, marginTop: 10 },
   challengeText: { color: Grits.pillText, fontSize: 15, fontWeight: '900' },
   verdict: { borderRadius: 24, paddingVertical: 14, paddingHorizontal: 18, marginBottom: 12 },
+  verdictNote: { color: Grits.pillText, fontSize: 14, fontWeight: '700', marginTop: 4, opacity: 0.95 },
   verdictText: { color: Grits.pillText, fontSize: 18, fontWeight: '900' },
   repClock: { color: Grits.pillText, fontSize: 13, fontWeight: '800', fontVariant: ['tabular-nums'] },
   cue: { backgroundColor: Grits.cream, borderRadius: 20, paddingVertical: 12, paddingHorizontal: 16, marginTop: 12 },
   spineRow: { alignItems: 'center', gap: 10, marginTop: 16 },
+  spineDataRow: { flexDirection: 'row', alignItems: 'center', gap: 10, alignSelf: 'stretch' },
+  rowTight: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 2 },
+  warn: { backgroundColor: Grits.orange, borderRadius: 18, paddingVertical: 10, paddingHorizontal: 14 },
+  helpWrap: { alignItems: 'center', marginTop: 10 },
+  helpLink: { color: Grits.ink, fontSize: 14, fontWeight: '800', paddingVertical: 6, paddingHorizontal: 10 },
   spinePill: { backgroundColor: Grits.pill, borderRadius: 999, paddingVertical: 12, paddingHorizontal: 30, minWidth: 170, alignItems: 'center' },
   spinePillText: { color: Grits.pillText, fontSize: 19, fontWeight: '800' },
   pressed: { transform: [{ translateY: 2 }] },
-  spineData: { alignSelf: 'stretch', backgroundColor: Grits.pill, borderRadius: 999, paddingVertical: 14, paddingHorizontal: 22, alignItems: 'center' },
+  spineData: { flex: 1, backgroundColor: Grits.pill, borderRadius: 999, paddingVertical: 14, paddingHorizontal: 22, alignItems: 'center', justifyContent: 'center' },
   spineDataText: { color: Grits.pillText, fontSize: 16, fontWeight: '700', textAlign: 'center', fontVariant: ['tabular-nums'] },
   card: { backgroundColor: Grits.cream, borderRadius: 28, padding: 18, gap: 8, marginTop: 14 },
   code: { color: Grits.ink, fontSize: 34, fontWeight: '900', letterSpacing: 2 },

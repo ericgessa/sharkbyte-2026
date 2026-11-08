@@ -1,5 +1,5 @@
 /**
- * GRITS brand palette, taken from the design mockups. Flat colors only: no glow, shadows or gradients.
+ * GRIT brand palette, taken from the design mockups. Flat colors only: no glow, shadows or gradients.
  * The home screen and the start-up overlay use these regardless of light/dark mode (they are the brand).
  */
 export const Grits = {

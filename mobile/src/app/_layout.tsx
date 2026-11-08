@@ -1,17 +1,27 @@
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
+import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
+import Head from 'expo-router/head';
 import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { SessionProvider, useSession } from '@/components/session-provider';
+import { G } from '@/games/theme';
 
 SplashScreen.preventAutoHideAsync();
 
+// Navigation chrome (headers, screen backgrounds) in the GRIT Games colors. The app is dark-only.
+const GritTheme = {
+  ...DarkTheme,
+  colors: { ...DarkTheme.colors, primary: G.green, background: G.bg, card: G.panel, text: G.text, border: G.line, notification: G.green },
+};
+
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+    <ThemeProvider value={GritTheme}>
       <SessionProvider>
+        {/* Browser tab title on every page (web only; no-op on native). The first paint uses app.json web.name. */}
+        <Head>
+          <title>GRIT</title>
+        </Head>
         <AnimatedSplashOverlay />
         <RootNavigator />
       </SessionProvider>
@@ -32,8 +42,10 @@ function RootNavigator() {
         <Stack.Screen name="exercise" options={{ headerShown: false }} />
         <Stack.Screen name="exercise/[slug]" options={{ headerShown: false }} />
         <Stack.Screen name="exercise/session/[slug]" options={{ headerShown: false }} />
-        <Stack.Screen name="pose" options={{ title: 'Pose lab' }} />
+        <Stack.Screen name="pose" options={{ title: 'Pose lab', headerTitleStyle: { fontWeight: '800' } }} />
+        <Stack.Screen name="workout/[id]" options={{ title: 'Workout', headerTitleStyle: { fontWeight: '800' } }} />
         <Stack.Screen name="games" options={{ headerShown: false }} />
+        <Stack.Screen name="challenges" options={{ headerShown: false }} />
         <Stack.Screen name="games/racer" options={{ headerShown: false }} />
       </Stack.Protected>
       <Stack.Protected guard={session === null}>

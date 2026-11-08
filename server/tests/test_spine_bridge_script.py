@@ -68,6 +68,75 @@ def test_server_address_becomes_the_socket_address():
     assert bridge.to_ws_url("localhost:8000") == "ws://localhost:8000"
 
 
+def test_server_addresses_are_cleaned_up_or_rejected():
+    assert bridge.normalize_server("192.168.1.20:8000") == "http://192.168.1.20:8000"
+    assert bridge.normalize_server(' "http://192.168.1.20:8000/" ') == "http://192.168.1.20:8000"
+    assert bridge.normalize_server("wss://api.example.com") == "https://api.example.com"
+    for bad in ("", "   ", "ftp://x", "http://", "http://x:notaport"):
+        assert bridge.normalize_server(bad) is None, bad
+
+
+def test_whatever_the_user_pastes_yields_the_server_and_the_code():
+    cmd = "python hardware/laptop/spine_bridge.py --server http://192.168.1.20:8000 --code ABCD-2345"
+    assert bridge.parse_pairing_input(cmd) == ("http://192.168.1.20:8000", "ABCD-2345")
+    assert bridge.parse_pairing_input("abcd-2345") == (None, "abcd-2345")
+    assert bridge.parse_pairing_input("  ABCD2345 ") == (None, "ABCD2345")
+    assert bridge.parse_pairing_input("http://my-host-name:8000 WXYZ-6789") == ("http://my-host-name:8000", "WXYZ-6789")
+    assert bridge.parse_pairing_input("10.0.0.5:8000") == ("http://10.0.0.5:8000", None)
+    assert bridge.parse_pairing_input("python hardware/laptop/spine_bridge.py") == (None, None)  # 'hardware' is no code
+    assert bridge.parse_pairing_input("") == (None, None)
+
+
+def test_each_way_of_failing_to_connect_gets_its_own_explanation():
+    refused = ConnectionRefusedError(10061, "refused")
+    msg, ask_again = bridge.explain_unreachable("http://localhost:8000", refused)
+    assert "THIS laptop" in msg and ask_again  # localhost on the bridge laptop: the address is wrong, ask again
+    msg, ask_again = bridge.explain_unreachable("http://192.168.1.20:8000", refused)
+    assert "dev_server" in msg and "0.0.0.0" in msg and not ask_again  # server down or local-only: keep retrying
+    msg, ask_again = bridge.explain_unreachable("http://192.168.1.20:8000", TimeoutError("timed out"))
+    assert "firewall" in msg.lower() and not ask_again
+    msg, ask_again = bridge.explain_unreachable("http://nosuchhost:8000", socket.gaierror(11001, "getaddrinfo failed"))
+    assert "nosuchhost" in msg and ask_again
+
+
+def test_check_server_knows_the_real_api_and_a_closed_port(server):
+    base, _ = server
+    assert bridge.check_server(base) == (None, False)
+    closed = f"http://127.0.0.1:{free_port()}"
+    problem, ask_again = bridge.check_server(closed, timeout=2)
+    assert problem and "THIS laptop" in problem and ask_again
+
+
+def test_a_rejected_code_is_dropped_and_the_user_asked_again_never_retried(server, monkeypatch):
+    base, _ = server
+    attempts = []
+    real_redeem = bridge_app_state["app"].state.sensor_pairing.redeem
+
+    def counting_redeem(code, client=""):
+        attempts.append(code)
+        return real_redeem(code, client)
+
+    monkeypatch.setattr(bridge_app_state["app"].state.sensor_pairing, "redeem", counting_redeem)
+
+    async def scenario():
+        asked = asyncio.Event()
+
+        async def fake_ask(prompt):
+            asked.set()
+            await asyncio.Event().wait()  # the user hasn't typed the new code yet
+
+        monkeypatch.setattr(bridge, "ask", fake_ask)
+        b = bridge.Bridge(argparse.Namespace(server=base, code="WRNG-CODE", raw=False), FakeLink())
+        run = asyncio.create_task(b.run())
+        await asyncio.wait_for(asked.wait(), 5)
+        await asyncio.sleep(0.3)  # time for any (wrong) retry loop to show itself
+        run.cancel()
+        assert b.code is None and b.token is None
+
+    asyncio.run(scenario())
+    assert attempts == ["WRNG-CODE"]  # tried once: a retry could never succeed and would count as guessing
+
+
 def test_streamer_numbers_messages_and_caps_the_rate_by_device_clock():
     s = bridge.Streamer("sid", max_hz=25)
     a, b, c = s.next(1000, {"spine_mid_deg": 1.0}), s.next(1010, {"spine_mid_deg": 1.0}), s.next(1040, {"spine_mid_deg": 2.0})
@@ -93,10 +162,14 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+bridge_app_state: dict = {}  # the running test server's app, for tests that look inside it
+
+
 @pytest.fixture
 def server():
     tiger = FakeTiger()
     app = create_app(store=InMemoryStore(), auth=FakeAuth(), timeseries=tiger)
+    bridge_app_state["app"] = app
     port = free_port()
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on"))
     thread = threading.Thread(target=srv.run, daemon=True)

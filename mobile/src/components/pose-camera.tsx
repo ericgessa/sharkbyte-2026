@@ -4,6 +4,7 @@ import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { G } from '@/games/theme';
 import { computePoseAngles } from '@/pose/angles';
 import { buildPoseWebViewHtml, parsePoseWebViewMessage, unpackLandmarks } from '@/pose/webview-pose-page';
 
@@ -113,12 +114,12 @@ export function PoseCamera({ onFrame, tint }: PoseCameraProps) {
 
 const styles = StyleSheet.create({
   wrap: { gap: Spacing.two, alignItems: 'flex-start', alignSelf: 'stretch' },
-  preview: { width: '100%', aspectRatio: 3 / 4, backgroundColor: '#111', borderRadius: 12, overflow: 'hidden' },
-  webview: { flex: 1, backgroundColor: '#111' },
+  preview: { width: '100%', aspectRatio: 3 / 4, backgroundColor: G.panel, borderRadius: 12, overflow: 'hidden' },
+  webview: { flex: 1, backgroundColor: G.panel },
   overlay: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', padding: Spacing.three },
-  overlayText: { color: '#bbbbbb', textAlign: 'center' },
-  button: { backgroundColor: '#3c87f7', borderRadius: Spacing.two, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three },
-  buttonText: { color: '#ffffff' },
+  overlayText: { color: G.muted, textAlign: 'center' },
+  button: { backgroundColor: G.green, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 18 },
+  buttonText: { color: G.greenInk },
   pressed: { opacity: 0.7 },
-  error: { color: '#d93025' },
+  error: { color: G.red },
 });

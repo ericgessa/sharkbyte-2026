@@ -1,7 +1,7 @@
 /**
  * Trend facts as a floating, deliberately uneven cluster of bubbles (big word + small caption), a big headline, and
  * the coach's advice in a soft blob. Facts come from the server (computed by code); the headline and advice are worded
- * by the AI coach when it's on. Flat colors from the GRITS palette; React Native Animated only; still under Reduce Motion.
+ * by the AI coach when it's on. Flat colors from the GRIT palette; React Native Animated only; still under Reduce Motion.
  */
 import { useEffect, useState } from 'react';
 import { Animated, Easing, Platform, StyleSheet, Text, View } from 'react-native';

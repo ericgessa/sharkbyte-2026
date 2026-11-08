@@ -5,7 +5,7 @@ import { EXERCISES, profileFor, type ExerciseSlug } from '@/games/exercise';
 import { GamesApiError, listGameResults } from '@/games/games-api';
 import { formatDuration, MAX_TARGET, MAX_TIME_S, MIN_TARGET, MIN_TIME_S, parseSetting, TARGET_PRESETS, TIME_PRESETS_S } from '@/games/racer-engine';
 import { createRoom, joinRoom, RoomSession, type RoomState } from '@/games/room-client';
-import { G } from '@/games/theme';
+import { GG as G } from '@/games/theme';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken } from '@/utils/auth';
 
@@ -13,11 +13,11 @@ import { CameraBadge, CameraPanel, useCameraFeed } from './camera-panel';
 import { useDisplayName } from './game-session';
 import { RaceTrack, type Lane } from './race-track';
 import { CoachSummary } from './results';
-import { Badge, Body, Btn, Chip, Panel, Row, SectionTitle, Stat, Steps } from './ui';
+import { Badge, Body, Btn, Chip, Panel, Row, SectionTitle, Stat, Steps } from './ui-grits';
 
 type Conn = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'error';
 
-const inputStyle = { backgroundColor: '#0f1315', color: G.text, borderColor: G.line, borderWidth: 1, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12, fontSize: 15 } as const;
+const inputStyle = { backgroundColor: G.panelHi, color: G.text, borderColor: G.line, borderWidth: 2, borderRadius: 14, paddingVertical: 8, paddingHorizontal: 12, fontSize: 15, fontWeight: '600' } as const;
 
 /** Live 1v1 Rep Racer. Each player's camera and MediaPipe run in their own browser; the server counts reps, runs the clock and picks the winner. */
 export function MultiplayerRacer({ onBack }: { onBack: () => void }) {

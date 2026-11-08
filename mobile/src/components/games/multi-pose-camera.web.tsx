@@ -5,7 +5,7 @@ import { computePoseAngles, type Landmark, type PoseAngles } from '@/pose/angles
 import { SKELETON } from '@/pose/skeleton';
 import { usePoseDetector } from '@/pose/use-pose-detector';
 import { assignPlayers, screenCenterX } from '@/games/people';
-import { G } from '@/games/theme';
+import { GG as G } from '@/games/theme';
 
 export type PlayerFrame = { angles: PoseAngles | null; landmarks: Landmark[] };
 export type MultiFrame = { players: [PlayerFrame | null, PlayerFrame | null]; fps: number };

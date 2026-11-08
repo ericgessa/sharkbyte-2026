@@ -1,6 +1,6 @@
 import type { Landmark, PoseAngles } from '@/pose/angles';
 
-import { Body } from './ui';
+import { Body } from './ui-grits';
 
 export type PlayerFrame = { angles: PoseAngles | null; landmarks: Landmark[] };
 export type MultiFrame = { players: [PlayerFrame | null, PlayerFrame | null]; fps: number };

@@ -117,12 +117,23 @@ wearable --ESP-NOW, 50 Hz--> base station --USB--> laptop/spine_bridge.py --WebS
 1. Flash `firmware/spine_wearable` onto the wearable and `firmware/base_station` onto the base ESP32.
    Both must share the same `PAIR_KEY` and `WIFI_CHANNEL`.
 2. Close the Arduino Serial Monitor (only one program can hold the port).
-3. **Into the app and database (recommended, works with the app on a phone):** plug the base station into the
-   laptop, `pip install -r laptop/requirements.txt`, and run
-   `python laptop/spine_bridge.py --server http://<backend address>:8000` (the same address the app uses; add
-   `--port COM5` if the port isn't found). In the app's `/pose` page start a workout, press *Pair laptop bridge*
-   and type the code it shows into the bridge. Readings are stored in Tiger Data and shown live in the app;
-   *Recalibrate* in the app reaches the wearable. When the workout finishes the bridge asks for the next code.
+3. **Into the app and database (recommended, works with the app on a phone):**
+   - On the **server** computer, start the backend with `python -m scripts.dev_server` (from `server/`). Plain
+     `uvicorn app.main:app` only accepts connections from its own computer, and the bridge laptop is refused.
+   - In the app, start a workout and press *Pair laptop bridge*. It shows the code **and the exact line to run**,
+     with the server's network address filled in, e.g.
+     `python hardware/laptop/spine_bridge.py --server http://192.168.1.20:8000 --code ABCD-2345`.
+     Never use `localhost` here unless the server runs on the bridge laptop itself: on the bridge laptop,
+     `localhost` means that laptop. If the app shows a warning under the code, fix that first.
+   - On the **bridge** laptop, plug in the base station, `pip install -r laptop/requirements.txt`, and run that
+     line (or run `python laptop/spine_bridge.py` and paste it). Add `--port COM5` if the port isn't found.
+   - The bridge checks the server before pairing and says exactly what's wrong if it can't reach it: nothing
+     running there, a server that only listens on its own computer, a firewall (allow Python on Private networks
+     in Windows Defender Firewall), or the two computers on different networks. It remembers the last server
+     that worked, keeps its pairing through a server restart, and after a wrong or expired code asks for a new
+     one (it never retries a bad code).
+   - Readings are stored in Tiger Data and shown live in the app; *Recalibrate* in the app reaches the wearable.
+     When the workout finishes, the bridge asks for the next code.
 4. **Or, with the app open in desktop Chrome/Edge on the same laptop:** press *Connect wearable (USB here)* and
    pick the port (Web Serial). The browser relays the readings itself.
 5. **Or just log to a CSV on the laptop:** `pip install -r laptop/requirements.txt` and

@@ -68,11 +68,19 @@ export async function finishWorkout(
 }
 
 /** The end-of-workout report. `source` is "agent" when Gemini wrote it, "rules" for the deterministic fallback. */
-export type CoachReport = { summary: string; source: 'agent' | 'rules' };
+export type CoachReport = {
+  summary: string;
+  source: 'agent' | 'rules';
+  /** true: this report is stored in Supabase (written once when the workout finished), so reopening it is instant. */
+  saved?: boolean;
+  /** When the saved report was written (ISO), or null if it is not saved. */
+  generated_at?: string | null;
+};
 
 /**
- * The end-of-workout report. Call once, after `finishWorkout`. With Gemini it can take up to ~20 s (the server falls
- * back to the rules report on its own), so show the stats first. Limited to about 6 calls a minute (429).
+ * The end-of-workout report. The server writes it once, when the workout finishes, and saves it, so after that this just
+ * returns the saved report. Right after `finishWorkout` it may still be being written (Gemini can take up to ~20 s; the
+ * server falls back to the rules report on its own), so show the stats first. Limited to about 6 calls a minute (429).
  */
 export async function getCoachReport(
   apiUrl: string,
@@ -157,19 +165,46 @@ export async function saveDeviceReps(
   if (!res.ok) throw await apiError(res);
 }
 
+export type SensorCodeReply = {
+  /** e.g. "ABCD-2345": typed (or pasted) into the laptop bridge. */
+  code: string;
+  expires_in_s: number;
+  /** Addresses a bridge on ANOTHER computer can use to reach the server, best first. */
+  server_urls: string[];
+  /** The exact line to run on the bridge laptop (server address and code filled in). */
+  bridge_command: string;
+  /** Set when pairing can't work as things stand (e.g. the server only listens on its own computer), with the fix. */
+  warning: string | null;
+};
+
+/** The bridge command for a code. Prefers the server's own suggestion: the app's API address can be `localhost`,
+ * which on the bridge laptop means that laptop, not the server. */
+export function bridgeCommand(code: string, apiUrl: string, serverUrls: string[] = []): string {
+  const server = serverUrls[0] ?? apiUrl.replace(/\/+$/, '');
+  return `python hardware/laptop/spine_bridge.py --server ${server} --code ${code}`;
+}
+
 /** A one-time code (e.g. "ABCD-2345") to type into the laptop sensor bridge (hardware/laptop/spine_bridge.py). */
 export async function getSensorCode(
   apiUrl: string,
   accessToken: string,
   sessionId: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ code: string; expires_in_s: number }> {
+): Promise<SensorCodeReply> {
   const res = await fetchImpl(`${apiUrl.replace(/\/+$/, '')}/api/workouts/${sessionId}/sensor-code`, {
     method: 'POST',
     headers: authHeaders(accessToken),
   });
   if (!res.ok) throw await apiError(res);
-  return (await res.json()) as { code: string; expires_in_s: number };
+  const r = (await res.json()) as Partial<SensorCodeReply> & { code: string; expires_in_s: number };
+  const serverUrls = Array.isArray(r.server_urls) ? r.server_urls.filter((u) => typeof u === 'string') : [];
+  return {
+    code: r.code,
+    expires_in_s: r.expires_in_s,
+    server_urls: serverUrls,
+    bridge_command: typeof r.bridge_command === 'string' ? r.bridge_command : bridgeCommand(r.code, apiUrl, serverUrls),
+    warning: typeof r.warning === 'string' ? r.warning : null,
+  };
 }
 
 export type SocketHandlers = {

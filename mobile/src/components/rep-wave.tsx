@@ -1,5 +1,5 @@
 /**
- * Rep wave charts, GRITS style (flat colors, rounded bars, no glow):
+ * Rep wave charts, GRIT style (flat colors, rounded bars, no glow):
  *   LiveWave - a scrolling bar wave of the movement while you train (every rep draws a peak)
  *   RepBars  - after the set: one bar per attempt (height = depth, width = time, orange = didn't count,
  *              ink cap = lower-back bend from the spine wearable)

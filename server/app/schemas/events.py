@@ -100,7 +100,7 @@ class SensorAuth(_Strict):
     schema_version: Literal[1]
     type: Literal["sensor_auth"]
     pair_code: str | None = Field(default=None, min_length=1, max_length=32)
-    bridge_token: str | None = Field(default=None, min_length=1, max_length=128)
+    bridge_token: str | None = Field(default=None, min_length=1, max_length=512)
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "SensorAuth":
@@ -150,10 +150,18 @@ class SensorReady(_Strict):
 
 
 class SensorCode(_Strict):
-    """REST reply: the code to show the user, to type into the laptop bridge."""
+    """REST reply: the code to show the user, to type into the laptop bridge, and how the bridge reaches this server.
+
+    ``server_urls``: addresses a bridge on ANOTHER computer can use, best first (never just ``localhost`` when a
+    network address is known). ``bridge_command``: the exact line to run on the bridge laptop. ``warning``: set when
+    pairing can't work as things stand (e.g. the server only listens on its own computer), with the fix.
+    """
 
     code: str
     expires_in_s: int
+    server_urls: list[str] = []
+    bridge_command: str | None = None
+    warning: str | None = None
 
 
 class SensorLive(_Strict):

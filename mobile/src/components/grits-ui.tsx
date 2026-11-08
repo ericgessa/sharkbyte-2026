@@ -1,5 +1,5 @@
 /**
- * Small building blocks shared by the GRITS screens (home, exercise hub, session). Flat colors from
+ * Small building blocks shared by the GRIT screens (home, exercise hub, session). Flat colors from
  * constants/grits.ts: no glow, shadows or gradients. Only React Native core.
  */
 import { router } from 'expo-router';

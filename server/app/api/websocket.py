@@ -512,12 +512,13 @@ async def _authenticate_bridge(ws: WebSocket) -> tuple[LiveSession, str] | None:
 
     pairing = ws.app.state.sensor_pairing
     if msg.pair_code is not None:
-        redeemed = pairing.redeem(msg.pair_code)
+        redeemed = pairing.redeem(msg.pair_code, client=ws.client.host if ws.client else "")
         pair, token = (redeemed[0], redeemed[1]) if redeemed else (None, "")
     else:
         pair, token = pairing.check_token(msg.bridge_token), msg.bridge_token or ""
     if pair is None:
-        await ws.close(code=CLOSE_UNAUTHENTICATED)
+        ended = msg.bridge_token is not None and pairing.is_revoked(msg.bridge_token)
+        await ws.close(code=CLOSE_NOT_ACTIVE if ended else CLOSE_UNAUTHENTICATED)  # 'workout ended' vs 'unknown pairing'
         return None
     live = await _load_live(ws, pair.session_id, pair.user_id)  # still active, still this user's
     if live is None:

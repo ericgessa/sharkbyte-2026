@@ -35,10 +35,10 @@ export function AnimatedSplashOverlay() {
     },
   });
 
-  // The GRITS mark (the home screen's wordmark and bar) on peach, faded out exactly as before.
+  // The GRIT mark (the home screen's wordmark and bar) on peach, faded out exactly as before.
   const image = (
     <View style={styles.mark}>
-      <Text style={styles.markWord}>GRITS</Text>
+      <Text style={styles.markWord}>GRIT</Text>
       <View style={styles.markBar} />
     </View>
   );
@@ -141,7 +141,7 @@ const styles = StyleSheet.create({
   },
   background: {
     borderRadius: 40,
-    experimental_backgroundImage: `linear-gradient(180deg, #3C9FFE, #0274DF)`,
+    experimental_backgroundImage: `linear-gradient(180deg, #39ff14, #1f9d0a)`,
     width: 128,
     height: 128,
     position: 'absolute',

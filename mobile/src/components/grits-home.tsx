@@ -3,10 +3,11 @@ import { useEffect, useState } from 'react';
 import { AccessibilityInfo, Animated, Easing, Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { BackendPill } from '@/components/backend-pill';
 import { Grits } from '@/constants/grits';
 
 /**
- * The GRITS home screen: the wordmark on a field of weight plates, and two ways in.
+ * The GRIT home screen: the wordmark on a field of weight plates, and two ways in.
  * Layout follows the mockup's proportions (measured on a 340 x 740 frame), scaled to the screen.
  * Pure React Native `Animated`: no extra libraries, nothing that talks to the backend.
  */
@@ -31,10 +32,11 @@ export function GritsHome() {
   const [bar] = useState(() => new Animated.Value(0));
   const [word] = useState(() => new Animated.Value(0));
   const [pills] = useState(() => [new Animated.Value(0), new Animated.Value(0)]);
+  const [status] = useState(() => new Animated.Value(0)); // the backend pill arrives last, quietly
 
   useEffect(() => {
     if (reduceMotion === null) return; // not known yet
-    const all = [bar, word, ...pills];
+    const all = [bar, word, ...pills, status];
     if (reduceMotion) {
       all.forEach((v) => v.setValue(1));
       return;
@@ -44,10 +46,11 @@ export function GritsHome() {
       Animated.timing(word, { toValue: 1, duration: 420, easing: ease, useNativeDriver: NATIVE }),
       Animated.timing(bar, { toValue: 1, duration: 520, easing: Easing.inOut(Easing.cubic), useNativeDriver: false }),
       Animated.stagger(110, pills.map((p) => Animated.timing(p, { toValue: 1, duration: 360, easing: ease, useNativeDriver: NATIVE }))),
+      Animated.timing(status, { toValue: 1, duration: 420, easing: ease, useNativeDriver: NATIVE }),
     ]);
     run.start();
     return () => run.stop();
-  }, [reduceMotion, bar, word, pills]);
+  }, [reduceMotion, bar, word, pills, status]);
 
   const barWidth = frameW * 0.72;
 
@@ -66,7 +69,7 @@ export function GritsHome() {
                 styles.wordmark,
                 { fontSize: Math.min(frameW * 0.25, 120), opacity: word, transform: [{ translateY: word.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }] },
               ]}>
-              GRITS
+              GRIT
             </Animated.Text>
             <View style={[styles.barTrack, { width: barWidth }]}>
               <Animated.View style={[styles.bar, { width: bar.interpolate({ inputRange: [0, 1], outputRange: [0, barWidth] }) }]} />
@@ -76,6 +79,7 @@ export function GritsHome() {
               <Pill label="Exercise" hint="Track your reps with the camera and the spine wearable" progress={pills[0]} onPress={() => router.push('/exercise' as Href)} />
               <Pill label="Play" hint="GRIT Games" progress={pills[1]} onPress={() => router.push('/games')} />
             </View>
+            <BackendPill progress={status} />
           </View>
         </SafeAreaView>
       </View>

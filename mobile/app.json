@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "sharkbyte2026",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "dark",
     "ios": {
       "icon": "./assets/expo.icon",
       "infoPlist": {
@@ -23,6 +23,8 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
+      "name": "GRIT",
+      "shortName": "GRIT",
       "output": "server",
       "favicon": "./assets/images/favicon.png"
     },
@@ -31,7 +33,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#0b0d0c",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
