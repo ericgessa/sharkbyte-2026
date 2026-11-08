@@ -53,6 +53,7 @@ struct __attribute__((packed)) SpinePacket {
   uint32_t ms;        // wearable's millis()
   float    fwd[4];    // each sensor's forward angle: C, B, A, BNO (NaN if not live)
   float    torso, upper, mid, lumbar;
+  float    roll;      // upper-back (BNO085) sideways tilt, + = toward the wearer's right (NaN if not live)
   uint8_t  okMask;    // bit i set = sensor i is working
 };
 
@@ -84,6 +85,10 @@ const uint32_t TICK_US = 10000;      // 100 Hz
 const int NEUTRAL_TICKS = 300;       // 3 s
 const int BEND_TICKS = 100;          // 1 s
 const uint32_t BEND_WAIT_MS = 4000;
+// The server expects imu_roll_deg + = leaning toward the wearer's RIGHT.
+// The sketch's sideways sign depends on how the BNO085 is mounted: lean right
+// in the debug view, and if "BNO side" goes negative, set this to -1.
+const float ROLL_SIGN = 1.0f;
 
 // ---------- Small 3D vector helpers ----------
 struct V3 { float x, y, z; };
@@ -201,6 +206,13 @@ float sideAngle(int i) {
   V3 sideAxis = normalize(cross(upNeutral[i], bendAxis[i]));
   V3 c = cross(upNeutral[i], upNow[i]);
   return atan2f(dot(c, sideAxis), dot(upNeutral[i], upNow[i])) * RAD_TO_DEG;
+}
+
+// A difference of two angles can reach +/-360; bring it back into -180..180 (NaN passes through)
+float wrap180(float d) {
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  return d;
 }
 
 // ---------- 100 Hz update ----------
@@ -383,9 +395,10 @@ void sendPacket() {
   }
   // Bottom to top: C(0) -> B(1) -> A(2) -> BNO(3). NaN carries through if missing.
   p.torso  = p.fwd[3];
-  p.upper  = p.fwd[3] - p.fwd[2];
-  p.mid    = p.fwd[2] - p.fwd[1];
-  p.lumbar = p.fwd[1] - p.fwd[0];
+  p.upper  = wrap180(p.fwd[3] - p.fwd[2]);
+  p.mid    = wrap180(p.fwd[2] - p.fwd[1]);
+  p.lumbar = wrap180(p.fwd[1] - p.fwd[0]);
+  p.roll   = (live && ok[BNO]) ? ROLL_SIGN * sideAngle(BNO) : NAN;
   esp_now_send(baseMac, (const uint8_t *)&p, sizeof(p));
 }
 
@@ -480,9 +493,9 @@ void loop() {
     for (int i = 0; i < NS; i++) a[i] = ok[i] ? forwardAngle(i) : NAN;
 
     // Bottom to top: C(0) -> B(1) -> A(2) -> BNO(3)
-    float lumbar = a[1] - a[0];
-    float mid    = a[2] - a[1];
-    float upper  = a[3] - a[2];
+    float lumbar = wrap180(a[1] - a[0]);
+    float mid    = wrap180(a[2] - a[1]);
+    float upper  = wrap180(a[3] - a[2]);
     float torso  = a[3];
 
     if (debugView) {

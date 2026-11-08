@@ -33,6 +33,22 @@ type TestState = 'idle' | 'running' | 'pass' | 'fail';
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/**
+ * The wireless base station also prints JSON that carries no angles: {"type":"status","msg":...} lines, and data
+ * lines while the wearable is still calibrating ({"t":..,"phase":"neutral",...}). Turn those into a readable note.
+ */
+const baseStationNote = (text: string): string | null => {
+  if (!text.startsWith('{')) return null;
+  try {
+    const o = JSON.parse(text) as { msg?: unknown; phase?: unknown };
+    if (typeof o.msg === 'string') return `base station: ${o.msg}`;
+    if (typeof o.phase === 'string') return `wearable calibrating (${o.phase.replace('_', ' ')})`;
+  } catch {
+    // half a line or garbage: show it as-is
+  }
+  return null;
+};
+
 const fmt = (v: number | null | undefined) => (v === null || v === undefined ? '-' : `${v.toFixed(1)}`);
 
 /**
@@ -118,7 +134,7 @@ export function PoseLab() {
     // A USB wearable restarted (or was just plugged in): put it back into stream mode.
     // The base station always streams and ignores 's'.
     if (text.startsWith('=== Spine')) void wearableRef.current?.send('s');
-    setWearableNote(text); // calibration prompts, warnings and base station status lines
+    setWearableNote(baseStationNote(text) ?? text); // calibration prompts, warnings, base station status
   };
 
   const connectSpine = async () => {

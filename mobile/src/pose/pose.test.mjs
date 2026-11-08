@@ -336,6 +336,24 @@ test('non-stream lines, garbage and unusable samples are ignored, not forwarded'
   ]) assert.equal(parseWearableLine(line), null, line);
 });
 
+// Exactly what hardware/firmware/base_station prints (printPacket), so the wireless link reads like USB.
+test('the wireless base station\'s lines read the same as a USB wearable; its extras are dropped', () => {
+  const live =
+    '{"t":4567,"imu_pitch_deg":12.3,"imu_roll_deg":-2.0,"spine_upper_deg":1.2,"spine_mid_deg":-0.4,"spine_lumbar_deg":5.6,"seq":12,"phase":"live","ok":15,"lost":0}';
+  assert.deepEqual(parseWearableLine(live + '\r'), {
+    deviceMs: 4567,
+    data: { imu_pitch_deg: 12.3, imu_roll_deg: -2, spine_upper_deg: 1.2, spine_mid_deg: -0.4, spine_lumbar_deg: 5.6 },
+  });
+  // MPU C (sacrum) not working: the base leaves lumbar out, the rest still counts
+  assert.deepEqual(parseWearableLine('{"t":9,"imu_pitch_deg":3.0,"spine_upper_deg":1.0,"spine_mid_deg":0.5,"seq":1,"phase":"live","ok":14,"lost":0}'), {
+    deviceMs: 9,
+    data: { imu_pitch_deg: 3, spine_upper_deg: 1, spine_mid_deg: 0.5 },
+  });
+  // still calibrating (no angles yet) and status lines are not samples
+  assert.equal(parseWearableLine('{"t":10,"seq":2,"phase":"neutral","ok":15,"lost":0}'), null);
+  assert.equal(parseWearableLine('{"type":"status","msg":"paired with wearable AA:BB:CC:DD:EE:FF"}'), null);
+});
+
 test('values the server would reject are dropped, and unknown keys never reach it', () => {
   const s = parseWearableLine('{"t":1,"spine_lumbar_deg":181,"spine_mid_deg":"3","imu_pitch_deg":20,"surprise":1}');
   assert.deepEqual(s, { deviceMs: 1, data: { imu_pitch_deg: 20 } });

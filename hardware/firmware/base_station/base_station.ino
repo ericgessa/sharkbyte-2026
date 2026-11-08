@@ -9,12 +9,14 @@
 //
 // Serial: 115200 baud. Sending 'c' over serial tells the wearable to recalibrate.
 //
-// Output, one line each:
-//   {"type":"data","seq":12,"t":4567,"phase":"live","torso":12.3,"upper":1.2,
-//    "mid":-0.4,"lumbar":5.6,"sensors":{"C":1.0,"B":6.6,"A":6.2,"BNO":7.4},"ok":15,"lost":0}
+// Output, one line each. Data lines use the same field names as spine_test's
+// stream mode, so the /pose page (mobile/src/pose/wearable.ts) reads either one:
+//   {"t":4567,"imu_pitch_deg":12.3,"imu_roll_deg":-2.0,"spine_upper_deg":1.2,
+//    "spine_mid_deg":-0.4,"spine_lumbar_deg":5.6,"seq":12,"phase":"live","ok":15,"lost":0}
 //   {"type":"status","msg":"..."}
-// Angles are degrees, + = bending forward. null = not available (calibrating,
-// or that sensor isn't working).
+// Angles are degrees, + = bending forward (roll: + = leaning right). A field is
+// left out when it isn't available (still calibrating, or that sensor isn't working).
+// t = the wearable's millis(); seq/phase/ok/lost are extras the app ignores.
 
 #include <WiFi.h>
 #include <esp_now.h>
@@ -45,6 +47,7 @@ struct __attribute__((packed)) SpinePacket {
   uint32_t ms;
   float    fwd[4];    // C, B, A, BNO
   float    torso, upper, mid, lumbar;
+  float    roll;
   uint8_t  okMask;
 };
 
@@ -115,24 +118,22 @@ void printStatus(const String &msg) {
   Serial.printf("{\"type\":\"status\",\"msg\":\"%s\"}\n", msg.c_str());
 }
 
-void printNum(float v) {
-  if (isnan(v)) Serial.print("null");
-  else Serial.print(v, 1);
+// Appends ,"name":value to the current JSON line, or nothing if the value is missing
+void printField(const char* name, float v) {
+  if (isnan(v)) return;
+  Serial.printf(",\"%s\":%.1f", name, v);
 }
 
 void printPacket(const SpinePacket &p) {
-  Serial.printf("{\"type\":\"data\",\"seq\":%lu,\"t\":%lu,\"phase\":\"%s\"",
-                (unsigned long)p.seq, (unsigned long)p.ms,
-                p.phase < 4 ? PHASES[p.phase] : "unknown");
-  Serial.print(",\"torso\":");  printNum(p.torso);
-  Serial.print(",\"upper\":");  printNum(p.upper);
-  Serial.print(",\"mid\":");    printNum(p.mid);
-  Serial.print(",\"lumbar\":"); printNum(p.lumbar);
-  Serial.print(",\"sensors\":{\"C\":"); printNum(p.fwd[0]);
-  Serial.print(",\"B\":");   printNum(p.fwd[1]);
-  Serial.print(",\"A\":");   printNum(p.fwd[2]);
-  Serial.print(",\"BNO\":"); printNum(p.fwd[3]);
-  Serial.printf("},\"ok\":%u,\"lost\":%lu}\n", p.okMask, (unsigned long)lost);
+  Serial.printf("{\"t\":%lu", (unsigned long)p.ms);
+  printField("imu_pitch_deg", p.torso);
+  printField("imu_roll_deg", p.roll);
+  printField("spine_upper_deg", p.upper);
+  printField("spine_mid_deg", p.mid);
+  printField("spine_lumbar_deg", p.lumbar);
+  Serial.printf(",\"seq\":%lu,\"phase\":\"%s\",\"ok\":%u,\"lost\":%lu}\n",
+                (unsigned long)p.seq, p.phase < 4 ? PHASES[p.phase] : "unknown",
+                p.okMask, (unsigned long)lost);
 }
 
 // ---------- Radio handling ----------

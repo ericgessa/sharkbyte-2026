@@ -60,8 +60,17 @@ Serial Monitor at 115200 baud.
    - `upper`: BNO085 minus MPU A
    - `mid`: MPU A minus MPU B
    - `lumbar`: MPU B minus MPU C (the most important one for form)
+<<<<<<< HEAD
 3. Serial commands: `c` recalibrate, `n` normal view, `d` per-sensor debug view (each sensor's own
    tilt, plus BNO data rate), `s` stream mode (one JSON line per sample, for the server).
+=======
+3. Send `d` for the per-sensor debug view (each sensor's own tilt, plus BNO data rate), `n` to go back.
+4. Send `s` for stream mode: one JSON line per sample (20/s), the format the app reads
+   (see "Data format" below). The `/pose` page sends `s` for you when it connects.
+
+`ROLL_SIGN` (in `spine_test` and `spine_wearable`): the app expects roll + = leaning to the wearer's right.
+Lean right in the debug view; if "BNO side" goes negative, set `ROLL_SIGN` to `-1`. Not checked on a body yet.
+>>>>>>> 6c3ba4d (Make the wireless base station speak the app's sensor format)
 
 A flat-back hip hinge raises `torso` while the sections stay near 0.
 Rounding the lower back raises `lumbar`.
@@ -104,29 +113,45 @@ The server stores all five values in Tiger Data and uses the section angles for 
 ## Running wirelessly
 
 ```
-wearable (spine_wearable) --ESP-NOW, 50 Hz--> base station (base_station) --USB, JSON lines--> laptop/spine_receiver.py
+wearable (spine_wearable) --ESP-NOW, 50 Hz--> base station (base_station) --USB, JSON lines--> /pose page (app) or laptop/spine_receiver.py
 ```
 
 1. Flash `firmware/spine_wearable` onto the wearable and `firmware/base_station` onto the base ESP32.
    Both must share the same `PAIR_KEY` and `WIFI_CHANNEL`.
-2. Close the Arduino Serial Monitor (only one program can hold the port), then:
-   `pip install -r laptop/requirements.txt` and `python laptop/spine_receiver.py` (add `--port COM5` if needed).
-3. Power the wearable; it pairs automatically and calibrates as above. Type `c` + Enter to recalibrate.
+2. Close the Arduino Serial Monitor (only one program can hold the port).
+3. **Into the app and database:** open the `/pose` page in desktop Chrome or Edge, press *Connect wearable* and
+   pick the base station's port. While a workout is running, each reading is sent to the server as a
+   `sensor_update` and stored in Tiger Data. *Recalibrate* is relayed to the wearable.
+4. **Or just log to a CSV on the laptop:** `pip install -r laptop/requirements.txt` and
+   `python laptop/spine_receiver.py` (add `--port COM5` if needed). Type `c` + Enter to recalibrate;
    Ctrl+C stops and saves `spine_<date>_<time>.csv` in the current folder.
+5. Power the wearable; it pairs automatically and calibrates as above.
 
 Pairing: the base beacons twice a second until a wearable pairs, then sends a heartbeat twice a second.
 If either side hears nothing for 3 s it drops the link and re-pairs on its own.
 
-The base prints one JSON object per line (115200 baud):
+## Data format
+
+`spine_test` (stream mode) and the base station print the same JSON lines, 115200 baud. The app's parser is
+`mobile/src/pose/wearable.ts`; the server contract is `sensor_update` in `docs/event-contracts.md`.
 
 ```json
-{"type":"data","seq":12,"t":4567,"phase":"live","torso":12.3,"upper":1.2,"mid":-0.4,"lumbar":5.6,"sensors":{"C":1.0,"B":6.6,"A":6.2,"BNO":7.4},"ok":15,"lost":0}
+{"t":4567,"imu_pitch_deg":12.3,"imu_roll_deg":-2.0,"spine_upper_deg":1.2,"spine_mid_deg":-0.4,"spine_lumbar_deg":5.6,"seq":12,"phase":"live","ok":15,"lost":0}
 {"type":"status","msg":"paired with wearable AA:BB:CC:DD:EE:FF"}
 ```
 
-- `null` = not available (still calibrating, or that sensor isn't working).
-- `phase`: `neutral`, `bend_wait`, `bend_hold`, `live`.
-- `ok`: bitmask of working sensors (1 = C, 2 = B, 4 = A, 8 = BNO; 15 = all). `lost`: packets missed since pairing.
+| Field | Meaning (degrees vs the calibrated neutral posture) |
+|---|---|
+| `t` | the wearable's own clock, ms since boot (the server re-anchors it) |
+| `imu_pitch_deg` | whole upper-body lean (BNO085), + = forward. Was `torso` |
+| `imu_roll_deg` | upper-back sideways tilt, + = toward the wearer's right (see `ROLL_SIGN`) |
+| `spine_upper_deg` | BNO085 minus MPU A, + = bending forward. Was `upper` |
+| `spine_mid_deg` | MPU A minus MPU B. Was `mid` |
+| `spine_lumbar_deg` | MPU B minus MPU C (sacrum). Was `lumbar` |
+
+- A field is **left out** when it isn't available (still calibrating, or that sensor isn't working).
+- Base station only, ignored by the app: `seq`; `phase` (`neutral`, `bend_wait`, `bend_hold`, `live`);
+  `ok` = bitmask of working sensors (1 = C, 2 = B, 4 = A, 8 = BNO; 15 = all); `lost` = packets missed since pairing.
 
 ### Sending the wireless data to the server (Tiger Data)
 
@@ -151,3 +176,10 @@ Back-shape cues need the camera to count the reps, so for coaching use way 1; wa
 - A section reacts to the wrong sensor: the AD0 wires don't match `MPU_AD0`
   (listed bottom to top: sacrum, lower back, mid back). Fix the wires or the array.
 - Two MPUs reading identical values: both are answering at 0x68; run `tests/ad0_phase_check`.
+<<<<<<< HEAD
+=======
+- Receiver or `/pose` page can't open the port: close the Arduino Serial Monitor (and the other of the two).
+- Base stays at "waiting for wearable": check the wearable is powered and both sketches share
+  `PAIR_KEY` / `WIFI_CHANNEL`. The wearable's USB Serial Monitor shows `[radio] ...` status lines.
+- `lost` climbing fast: move the base station closer or off the back of the laptop.
+>>>>>>> 6c3ba4d (Make the wireless base station speak the app's sensor format)

@@ -34,9 +34,9 @@ PROMPTS = {
     "live":      "Calibrated. Live data in degrees (+ = bending forward):",
 }
 
-FIELDS = ["pc_time", "seq", "wearable_ms", "phase",
-          "torso", "upper", "mid", "lumbar",
-          "C", "B", "A", "BNO", "lost"]
+# Angle fields the base station prints (the same names the app's sensor_update uses)
+ANGLES = ["imu_pitch_deg", "imu_roll_deg", "spine_upper_deg", "spine_mid_deg", "spine_lumbar_deg"]
+FIELDS = ["pc_time", "seq", "wearable_ms", "phase", *ANGLES, "ok", "lost"]
 
 # Words that usually appear in an ESP32's USB port description
 PORT_HINTS = ("cp210", "ch340", "ch910", "wch", "silicon labs",
@@ -162,7 +162,7 @@ def main():
             if msg.get("type") == "status":
                 print(f"\n[base] {msg.get('msg')}")
                 continue
-            if msg.get("type") != "data":
+            if "t" not in msg:                   # data lines always carry the wearable's clock
                 continue
 
             phase = msg.get("phase")
@@ -170,22 +170,16 @@ def main():
                 print("\n" + PROMPTS.get(phase, f"phase: {phase}"))
                 last_phase = phase
 
-            sensors = msg.get("sensors", {})
-            writer.writerow({
+            row = {
                 "pc_time": datetime.now().isoformat(timespec="milliseconds"),
                 "seq": msg.get("seq"),
                 "wearable_ms": msg.get("t"),
                 "phase": phase,
-                "torso": msg.get("torso"),
-                "upper": msg.get("upper"),
-                "mid": msg.get("mid"),
-                "lumbar": msg.get("lumbar"),
-                "C": sensors.get("C"),
-                "B": sensors.get("B"),
-                "A": sensors.get("A"),
-                "BNO": sensors.get("BNO"),
+                "ok": msg.get("ok"),
                 "lost": msg.get("lost"),
-            })
+            }
+            row.update({name: msg.get(name) for name in ANGLES})   # missing = not available
+            writer.writerow(row)
             rows += 1
             if uploader is not None:
                 try:
@@ -197,9 +191,10 @@ def main():
                 log_file.flush()
 
             if phase == "live" and not args.raw:
-                print(f"\rtorso {fmt(msg.get('torso'))} | upper {fmt(msg.get('upper'))} | "
-                      f"mid {fmt(msg.get('mid'))} | lumbar {fmt(msg.get('lumbar'))} | "
-                      f"lost {msg.get('lost', 0)}   ", end="", flush=True)
+                print(f"\rtorso {fmt(msg.get('imu_pitch_deg'))} | side {fmt(msg.get('imu_roll_deg'))} | "
+                      f"upper {fmt(msg.get('spine_upper_deg'))} | mid {fmt(msg.get('spine_mid_deg'))} | "
+                      f"lumbar {fmt(msg.get('spine_lumbar_deg'))} | lost {msg.get('lost', 0)}   ",
+                      end="", flush=True)
 
     except KeyboardInterrupt:
         pass

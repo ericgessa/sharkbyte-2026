@@ -278,7 +278,11 @@ Things to know:
   hidden one in `src/components/app-tabs.web.tsx` (no visible tab). Without it the router bounces `/pose` to `/`.
   Any new non-tab page on web needs the same.
 - Don't start the dev server with `CI=1`: that disables file watching, so edits are silently not served.
+<<<<<<< HEAD
 - Tests: `npm run test:pose` (36 pure-logic tests, no browser). The backend suite also runs the TypeScript
+=======
+- Tests: `npm run test:pose` (37 pure-logic tests, no browser). The backend suite also runs the TypeScript
+>>>>>>> 6c3ba4d (Make the wireless base station speak the app's sensor format)
   (`server/tests/test_frontend_contract.py`) and checks that what it produces is accepted by the real server.
 
 **Push-up mini test:** section 4 of the lab has a *Run push-up test* button. It creates its own push-up workout,

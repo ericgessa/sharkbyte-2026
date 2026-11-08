@@ -19,7 +19,11 @@
 // Serial commands: 'c' recalibrate | 'n' normal view | 'd' per-sensor debug view
 //                  's' stream mode: one JSON line per sample for the /pose page,
 //                      which forwards it to the server as a sensor_update.
+<<<<<<< HEAD
 // Stream line (fields with a missing sensor are left out):
+=======
+// Stream line (fields with a missing sensor are left out; same format as base_station):
+>>>>>>> 6c3ba4d (Make the wireless base station speak the app's sensor format)
 //   {"t":123456,"imu_pitch_deg":30.1,"imu_roll_deg":-2.0,
 //    "spine_upper_deg":4.2,"spine_mid_deg":-1.5,"spine_lumbar_deg":18.0}
 
@@ -168,6 +172,19 @@ float sideAngle(int i) {
   V3 sideAxis = normalize(cross(upNeutral[i], bendAxis[i]));
   V3 c = cross(upNeutral[i], upNow[i]);
   return atan2f(dot(c, sideAxis), dot(upNeutral[i], upNow[i])) * RAD_TO_DEG;
+}
+
+// A difference of two angles can reach +/-360; bring it back into -180..180 (NaN passes through)
+float wrap180(float d) {
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  return d;
+}
+
+// Appends ,"name":value to the current JSON line, or nothing if the value is missing
+void printField(const char* name, float v) {
+  if (isnan(v)) return;
+  Serial.printf(",\"%s\":%.2f", name, v);
 }
 
 // ---------- 100 Hz update ----------
