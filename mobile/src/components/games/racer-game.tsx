@@ -3,16 +3,18 @@ import { Pressable, Text, View } from 'react-native';
 
 import { G } from '@/games/theme';
 
+import { LocalRacer } from './racer-local';
 import { MultiplayerRacer } from './racer-multiplayer';
 import { SoloRacer } from './racer-solo';
 import { Body, GameScreen } from './ui';
 
-type Mode = 'menu' | 'solo' | 'multiplayer' | 'personal_best';
+type Mode = 'menu' | 'solo' | 'multiplayer' | 'personal_best' | 'local';
 
 const MODES: { id: Exclude<Mode, 'menu'>; title: string; tag: string; text: string; icon: string }[] = [
   { id: 'solo', title: 'Solo Goal', tag: 'A', icon: '🎯', text: 'Pick an exercise, a target and a time limit. Reach the finish line before the clock runs out.' },
   { id: 'multiplayer', title: 'Live 1v1', tag: 'B', icon: '⚔️', text: 'Create a room, share the code, and race a friend in real time from your own webcams.' },
   { id: 'personal_best', title: 'Personal Best', tag: 'C', icon: '👻', text: 'Race a ghost of your own best recorded attempt and try to beat your time.' },
+  { id: 'local', title: 'Local 2-Player', tag: 'D', icon: '👥', text: 'Two people, one camera, one computer: stand side by side and race each other. No second device needed.' },
 ];
 
 export function RacerGame() {
@@ -35,6 +37,8 @@ export function RacerGame() {
             </Pressable>
           ))}
         </View>
+      ) : mode === 'local' ? (
+        <LocalRacer onBack={() => setMode('menu')} />
       ) : mode === 'multiplayer' ? (
         <MultiplayerRacer onBack={() => setMode('menu')} />
       ) : (
