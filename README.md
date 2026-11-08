@@ -14,9 +14,9 @@ An AI gym coach built from three layers:
   deterministic and never waits on the model (see [`docs/AI_COACH.md`](docs/AI_COACH.md)).
 
 A spine wearable (an ESP32 with four IMUs down the back, in [`hardware/`](hardware/)) measures upper-back tilt
-and how much the upper, mid and lower back each bend. It plugs in over USB; the `/pose` page relays its readings
-to the backend as `sensor_update` messages, which are stored. The coach doesn't use them yet
-(see [`hardware/README.md`](hardware/README.md)).
+and how much the upper, mid and lower back each bend. It reaches the `/pose` page over USB (directly, or through
+a wireless base station); the page relays its readings to the backend as `sensor_update` messages, which are
+stored. The coach doesn't use them yet (see [`hardware/README.md`](hardware/README.md)).
 
 > **Status:** the backend is built and tested against **simulated** data. Nothing has been validated with a
 > real camera or wearable yet, MediaPipe pose tracking exists **for the web only** (a developer page,

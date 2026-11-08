@@ -11,7 +11,8 @@ import { computePoseAngles, type PoseAngles } from '@/pose/angles';
 import { detectOnImageUrl } from '@/pose/mediapipe';
 import { PoseStreamer, type ServerEvent } from '@/pose/protocol';
 import { simulatedPushUpFrames, simulatedSquatFrames } from '@/pose/simulate';
-import { createWorkout, finishWorkout, getCoachReport, WorkoutSocket, type CoachReport, type CreatedWorkout } from '@/pose/workout-client';
+import { getCoachReport, type CoachReport } from '@/pose/workout-client';
+import { createWorkout, finishWorkout, WorkoutSocket, type CreatedWorkout } from '@/pose/workout-client';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken, signOut } from '@/utils/auth';
 import { describeWearableLine, parseWearableLine, SensorStreamer, type SpineData } from '@/pose/wearable';
@@ -102,7 +103,7 @@ export function PoseLab() {
     [],
   );
 
-  // ---- spine wearable (USB) ----
+  // ---- spine wearable (USB, or the wireless base station) ----
 
   const onWearableLine = (line: string) => {
     const sample = parseWearableLine(line);
@@ -112,11 +113,12 @@ export function PoseLab() {
       if (update) socketRef.current?.sendSensor(update);
       return;
     }
-    const text = describeWearableLine(line);
+    const text = line.trim();
     if (!text) return;
-    // The board restarted (or was just plugged in): put it back into stream mode.
-    if (text.startsWith('=== Spine test')) void wearableRef.current?.send('s');
-    setWearableNote(text); // calibration prompts and warnings from the firmware
+    // A USB wearable restarted (or was just plugged in): put it back into stream mode.
+    // The base station always streams and ignores 's'.
+    if (text.startsWith('=== Spine')) void wearableRef.current?.send('s');
+    setWearableNote(text); // calibration prompts, warnings and base station status lines
   };
 
   const connectSpine = async () => {
@@ -372,11 +374,11 @@ export function PoseLab() {
             </ThemedText>
           </Section>
 
-          <Section title="2. Spine wearable (USB)">
+          <Section title="2. Spine wearable">
             <ThemedText type="small" themeColor="textSecondary">
-              Plug the ESP32 into this computer: either the one running hardware/firmware/spine_test (wired) or the BASE STATION that receives the wireless wearable. Close the Arduino Serial Monitor
-              first: only one program can use the port. Desktop Chrome or Edge only. Readings go to the backend while a
-              workout is running.
+              Plug in either the wearable itself (hardware/firmware/spine_test) or the wireless base station
+              (hardware/firmware/base_station). Close the Arduino Serial Monitor first: only one program can use the
+              port. Desktop Chrome or Edge only. Readings go to the backend while a workout is running.
             </ThemedText>
             <View style={styles.row}>
               <Btn
