@@ -7,6 +7,7 @@ import {
   TabListProps,
 } from 'expo-router/ui';
 import { Link, router } from 'expo-router';
+import { useState } from 'react';
 import { Pressable, Text, View, StyleSheet } from 'react-native';
 
 import { Spacing } from '@/constants/theme';
@@ -50,7 +51,7 @@ export function CustomTabList(props: TabListProps) {
     <View {...props} style={styles.tabListContainer}>
       <View style={styles.innerContainer}>
         <Pressable onPress={() => router.navigate('/')} accessibilityRole="link" style={styles.brand}>
-          <Text style={styles.brandText}>SharkByte</Text>
+          <Text style={styles.brandText}>GRIT</Text>
         </Pressable>
 
         {props.children}
@@ -65,13 +66,26 @@ export function CustomTabList(props: TabListProps) {
           </Pressable>
         </Link>
 
-        <Link href="/pose" asChild>
-          <Pressable accessibilityRole="link" style={({ pressed }) => [styles.cta, pressed && styles.pressed]} testID="nav-start">
-            <Text style={styles.ctaText}>Start workout</Text>
-          </Pressable>
-        </Link>
+        <StartWorkoutButton />
       </View>
     </View>
+  );
+}
+
+// Navigates on press instead of using <Link asChild>: Link can drop a function `style` on web, which left this
+// button without its green background (dark text on the dark bar, so it looked disabled).
+function StartWorkoutButton() {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <Pressable
+      accessibilityRole="link"
+      onPress={() => router.push('/pose')}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      style={({ pressed }) => [styles.cta, hovered && styles.ctaHover, pressed && styles.ctaPressed]}
+      testID="nav-start">
+      <Text style={styles.ctaText}>Start workout</Text>
+    </Pressable>
   );
 }
 
@@ -118,6 +132,17 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingVertical: 8,
     paddingHorizontal: 14,
+    // Web only (ignored on native): ease the hover change instead of snapping.
+    transitionProperty: 'background-color, transform',
+    transitionDuration: '150ms',
+  } as object,
+  ctaHover: {
+    backgroundColor: '#5cff3d', // a step brighter than G.green
+    transform: [{ translateY: -1 }],
+  },
+  ctaPressed: {
+    backgroundColor: G.greenDim,
+    transform: [{ translateY: 0 }],
   },
   ctaText: {
     color: G.greenInk,

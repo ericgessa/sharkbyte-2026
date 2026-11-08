@@ -42,7 +42,7 @@ export default function HomeScreen() {
               Every rep counted.{'\n'}Every set coached.
             </Text>
             <Text style={s.lede}>
-              SharkByte follows your squats and push-ups through your camera, counts only the reps you finish, and tells
+              GRIT follows your squats and push-ups through your camera, counts only the reps you finish, and tells
               you what to fix while you train.
             </Text>
             <View style={s.ctas}>
