@@ -66,6 +66,17 @@ class SquatConfig:
     adapt_frames: int = 10  # about a third of a second at 30 fps
     adapt_std_deg: float = 3.5  # camera jitter is a few degrees; real movement is far more
     adapt_margin_deg: float = 4.0
+    # --- glitch guard (pose tracking sometimes returns nonsense for a few frames) ---
+    # A side reading below this is not a real joint angle (seen live: an "elbow" at 11-18 deg mid push-up).
+    min_plausible_deg: float = 30.0
+    # Left and right further apart than this: one side is mistracked, so trust the side that continues the motion.
+    max_side_gap_deg: float = 40.0
+    # Median of the last N usable frames drives the counter: a spike of up to N // 2 frames can never cross a threshold.
+    smoothing_frames: int = 5
+    # An attempt only ends once the top has held this long, so wobbling around the top threshold is one attempt.
+    top_hold_ms: int = 250
+    # No real rep is this short: attempts under it are tracking glitches, never counted and never reported.
+    glitch_ms: int = 300
 
 
 @dataclass(frozen=True)
@@ -154,6 +165,7 @@ class _RepInProgress:
     ascent_start_ts: int | None = None
     min_angle: float = 180.0
     max_asymmetry: float | None = None
+    top_since: int | None = None  # a partial attempt is back at the top since then (ends after top_hold_ms)
 
 
 @dataclass
@@ -193,11 +205,15 @@ class SquatRepCounter:
     _descent_deg: float = field(default=0.0, repr=False)
     _settled: deque = field(default_factory=deque, repr=False)
     _rejected: RejectedRep | None = field(default=None, repr=False)  # set by _advance, handed out by update
+    _recent: deque = field(default_factory=deque, repr=False)  # last usable angles, for the median
+    _sides_agree: bool = field(default=True, repr=False)  # this frame's left/right are both believable
+    glitch_frames: int = 0  # frames where a side was implausible or the sides disagreed
 
     def __post_init__(self) -> None:
         self._stand_deg = self.config.standing_deg
         self._descent_deg = self.config.descent_start_deg
         self._settled = deque(maxlen=self.config.adapt_frames)
+        self._recent = deque(maxlen=max(1, self.config.smoothing_frames))
 
     @property
     def standing_threshold_deg(self) -> float:
@@ -212,6 +228,7 @@ class SquatRepCounter:
         self._rep = None
         self.phase = SquatPhase.UNARMED
         self._settled.clear()
+        self._recent.clear()
         self._last_ts = None  # the pause may have lasted longer than max_gap_ms
 
     def update(self, sample: PoseSample) -> StepResult:
@@ -247,6 +264,7 @@ class SquatRepCounter:
             self._rep = None
             self.phase = SquatPhase.UNARMED
             self._settled.clear()
+            self._recent.clear()
         self._last_ts = sample.timestamp_ms
 
         angle = self._angle(sample)
@@ -267,7 +285,32 @@ class SquatRepCounter:
         return StepResult(dropped=reason, tracking_changed=tracking_changed, phase=self.phase)
 
     def _angle(self, sample: PoseSample) -> float | None:
-        angles = [a for a in sample.pair(self.config.joint) if a is not None]
+        """The angle that drives the counter: glitches removed, then the median of the last few usable frames."""
+        raw = self._frame_angle(sample)
+        if raw is None:
+            return None
+        self._recent.append(raw)
+        return statistics.median(self._recent)
+
+    def _frame_angle(self, sample: PoseSample) -> float | None:
+        """This frame's joint angle, or None if nothing believable was measured.
+
+        Drops a side that is physically implausible. If both sides are believable but far apart, one of them is
+        mistracked: keep the one closer to the recent angle (with no history yet, skip the frame)."""
+        cfg = self.config
+        left, right = (a if a is not None and a >= cfg.min_plausible_deg else None for a in sample.pair(cfg.joint))
+        glitch = any(a is not None and a < cfg.min_plausible_deg for a in sample.pair(cfg.joint))
+        self._sides_agree = left is not None and right is not None and abs(left - right) <= cfg.max_side_gap_deg
+        if left is not None and right is not None and not self._sides_agree:
+            glitch = True
+            if not self._recent:
+                left = right = None
+            else:
+                ref = statistics.median(self._recent)
+                left, right = (left, None) if abs(left - ref) <= abs(right - ref) else (None, right)
+        if glitch:
+            self.glitch_frames += 1
+        angles = [a for a in (left, right) if a is not None]
         return sum(angles) / len(angles) if angles else None
 
     def _advance(self, angle: float, sample: PoseSample) -> RepMetrics | None:
@@ -300,9 +343,17 @@ class SquatRepCounter:
             if angle <= cfg.bottom_deg:
                 self.phase = SquatPhase.BOTTOM
                 rep.bottom_ts = ts
+                rep.top_since = None
             elif angle >= self._stand_deg:
-                self._reject_partial(rep, ts)
-                self._abort()
+                # Back at the top without reaching the bottom. The attempt only ends once the top holds, so a wobble
+                # around the threshold (or a dip straight back down) stays ONE attempt, which can still become a rep.
+                if rep.top_since is None:
+                    rep.top_since = ts
+                if ts - rep.top_since >= cfg.top_hold_ms:
+                    self._reject_partial(rep, rep.top_since)
+                    self._abort()
+            else:
+                rep.top_since = None
         elif self.phase is SquatPhase.BOTTOM:
             if angle > cfg.bottom_exit_deg:
                 self.phase = SquatPhase.ASCENDING
@@ -340,7 +391,7 @@ class SquatRepCounter:
         assert rep is not None
         rep.min_angle = min(rep.min_angle, angle)
         left, right = sample.pair(self.config.joint)
-        if left is not None and right is not None:
+        if self._sides_agree and left is not None and right is not None:  # a mistracked side is not asymmetry
             diff = abs(left - right)
             rep.max_asymmetry = diff if rep.max_asymmetry is None else max(rep.max_asymmetry, diff)
 
@@ -349,7 +400,9 @@ class SquatRepCounter:
         bottom threshold. A shallower dip (a shift of weight, camera jitter) is ignored silently, as before."""
         cfg = self.config
         halfway = self._descent_deg - (self._descent_deg - cfg.bottom_deg) / 2
-        if rep.min_angle <= halfway:
+        if ts - rep.start_ts < cfg.glitch_ms:
+            logger.info("dip ignored: %d ms is too short to be a real attempt (tracking glitch)", ts - rep.start_ts)
+        elif rep.min_angle <= halfway:
             self._rejected = RejectedRep(
                 RejectReason.PARTIAL_RANGE, round(rep.min_angle, 1), ts - rep.start_ts, rep.start_ts, ts, cfg.joint
             )
@@ -367,6 +420,10 @@ class SquatRepCounter:
         self._rep = None
         self.phase = SquatPhase.STANDING
 
+        if duration < self.config.glitch_ms:
+            self.aborted_attempts += 1
+            logger.info("rep ignored: %d ms is too short to be a real rep (tracking glitch)", duration)
+            return None
         if duration < self.config.min_rep_ms:
             self.aborted_attempts += 1
             self._rejected = RejectedRep(

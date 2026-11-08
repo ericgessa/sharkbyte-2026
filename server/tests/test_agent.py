@@ -356,12 +356,12 @@ def test_recap_without_the_llm_is_the_deterministic_text():
 
 
 def test_recap_uses_the_llm_text_when_valid_and_caches_finished_workouts():
-    prov = FakeProvider(summarize="You did 5 reps and your depth drifted about 8.7 degrees. Nice work.")
+    prov = FakeProvider(summarize="You did 5 reps and your depth drifted a little toward the end. Nice work.")
     with make_client(InMemoryStore(), CoachAgent(prov)) as c:
         sid = finished_workout(c)
         a = c.get(f"/api/workouts/{sid}/coach-summary", headers=ALICE).json()
         b = c.get(f"/api/workouts/{sid}/coach-summary", headers=ALICE).json()
-    assert a == b and a["source"] == "agent" and "8.7 degrees" in a["summary"]
+    assert a == b and a["source"] == "agent" and "drifted a little" in a["summary"]
     assert len(prov.summarize_calls) == 1  # the second request was served from the cache
     assert prov.summarize_calls[0]["supabase"]["stats"]["rep_count"] == 5  # the model got the data, nothing else
 
