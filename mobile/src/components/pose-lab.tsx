@@ -14,6 +14,8 @@ import { simulatedPushUpFrames, simulatedSquatFrames } from '@/pose/simulate';
 import { createWorkout, finishWorkout, getCoachReport, WorkoutSocket, type CoachReport, type CreatedWorkout } from '@/pose/workout-client';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken, signOut } from '@/utils/auth';
+import { describeWearableLine, parseWearableLine, SensorStreamer, type SpineData } from '@/pose/wearable';
+import { connectWearable, WEARABLE_SERIAL_AVAILABLE, type WearableConnection } from '@/pose/wearable-serial';
 
 const CLOSE_HINT: Record<number, string> = {
   1006: 'connection lost',
@@ -30,7 +32,7 @@ type TestState = 'idle' | 'running' | 'pass' | 'fail';
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const fmt = (v: number | null) => (v === null ? '-' : `${v.toFixed(1)}`);
+const fmt = (v: number | null | undefined) => (v === null || v === undefined ? '-' : `${v.toFixed(1)}`);
 
 /**
  * Developer lab for the camera pipeline: MediaPipe pose tracking in the browser -> joint angles -> the SharkByte
@@ -58,6 +60,9 @@ export function PoseLab() {
   const [pushUpState, setPushUpState] = useState<TestState>('idle');
   const [pushUpLines, setPushUpLines] = useState<string[]>([]);
   const pushUpSocket = useRef<WorkoutSocket | null>(null);
+  const [wearable, setWearable] = useState<'off' | 'connecting' | 'on'>('off');
+  const [wearableNote, setWearableNote] = useState<string | null>(null);
+  const [spine, setSpine] = useState<SpineData | null>(null);
 
   const workoutRef = useRef<CreatedWorkout | null>(null);
   const socketRef = useRef<WorkoutSocket | null>(null);
@@ -65,6 +70,9 @@ export function PoseLab() {
   const latestRef = useRef<PoseAngles | null>(null);
   const fpsRef = useRef(0);
   const simTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wearableRef = useRef<WearableConnection | null>(null);
+  const sensorStreamerRef = useRef<SensorStreamer | null>(null);
+  const spineRef = useRef<SpineData | null>(null);
 
   const note = (line: string) => setLog((l) => [line, ...l].slice(0, 8));
 
@@ -73,6 +81,7 @@ export function PoseLab() {
     const id = setInterval(() => {
       setAngles(latestRef.current);
       setFps(fpsRef.current);
+      setSpine(spineRef.current);
     }, 200);
     return () => clearInterval(id);
   }, []);
@@ -88,9 +97,45 @@ export function PoseLab() {
       if (simTimer.current) clearInterval(simTimer.current);
       socketRef.current?.close();
       pushUpSocket.current?.close();
+      void wearableRef.current?.close();
     },
     [],
   );
+
+  // ---- spine wearable (USB) ----
+
+  const onWearableLine = (line: string) => {
+    const sample = parseWearableLine(line);
+    if (sample) {
+      spineRef.current = sample.data;
+      const update = sensorStreamerRef.current?.next(sample); // only while a workout is running
+      if (update) socketRef.current?.sendSensor(update);
+      return;
+    }
+    const text = describeWearableLine(line);
+    if (!text) return;
+    // The board restarted (or was just plugged in): put it back into stream mode.
+    if (text.startsWith('=== Spine test')) void wearableRef.current?.send('s');
+    setWearableNote(text); // calibration prompts and warnings from the firmware
+  };
+
+  const connectSpine = async () => {
+    setWearable('connecting');
+    try {
+      const conn = await connectWearable(onWearableLine, (reason) => {
+        wearableRef.current = null;
+        spineRef.current = null;
+        setWearable('off');
+        setWearableNote(`disconnected (${reason})`);
+      });
+      wearableRef.current = conn;
+      setWearable('on');
+      await conn.send('s'); // JSON stream mode
+    } catch (e) {
+      setWearable('off');
+      setWearableNote(messageOf(e)); // includes the user closing the port chooser
+    }
+  };
 
   const pushAngles = (a: PoseAngles) => {
     const update = streamerRef.current?.next(a);
@@ -150,6 +195,7 @@ export function PoseLab() {
       const w = await createWorkout(apiUrl, accessToken, exercise.trim() || 'squat');
       workoutRef.current = w;
       streamerRef.current = new PoseStreamer(w.session_id);
+      sensorStreamerRef.current = new SensorStreamer(w.session_id);
       const socket = new WorkoutSocket(apiUrl, w.session_id, accessToken, {
         onEvent: handleEvent,
         onClose: (code) => setConnection(`closed (${code}${CLOSE_HINT[code] ? `: ${CLOSE_HINT[code]}` : ''})`),
@@ -180,6 +226,7 @@ export function PoseLab() {
       socketRef.current?.close();
       socketRef.current = null;
       streamerRef.current = null;
+      sensorStreamerRef.current = null;
       setPhase('finished');
     }
     if (finished) await loadReport(w.session_id);
@@ -222,7 +269,7 @@ export function PoseLab() {
 
   /**
    * One-tap push-up check against the real backend, with SIMULATED elbow angles (5 push-ups, the last two shallower).
-   * Creates its own push-up workout, so it does not touch the workout in section 2. PASS means: the server accepted
+   * Creates its own push-up workout, so it does not touch the workout in section 3. PASS means: the server accepted
    * the stream, counted 5 push-ups from the elbow angle, coached the depth drop, and saved 5 reps.
    */
   const runPushUpTest = async () => {
@@ -325,7 +372,39 @@ export function PoseLab() {
             </ThemedText>
           </Section>
 
-          <Section title="2. Workout">
+          <Section title="2. Spine wearable (USB)">
+            <ThemedText type="small" themeColor="textSecondary">
+              Plug the ESP32 into this computer: either the one running hardware/firmware/spine_test (wired) or the BASE STATION that receives the wireless wearable. Close the Arduino Serial Monitor
+              first: only one program can use the port. Desktop Chrome or Edge only. Readings go to the backend while a
+              workout is running.
+            </ThemedText>
+            <View style={styles.row}>
+              <Btn
+                label={wearable === 'connecting' ? 'Connecting...' : 'Connect wearable'}
+                onPress={connectSpine}
+                disabled={!WEARABLE_SERIAL_AVAILABLE || wearable !== 'off'}
+                testID="lab-wearable-connect"
+              />
+              <Btn label="Recalibrate" onPress={() => void wearableRef.current?.send('c')} disabled={wearable !== 'on'} />
+              <Btn label="Disconnect" onPress={() => void wearableRef.current?.close()} disabled={wearable !== 'on'} />
+            </View>
+            <ThemedText type="code" testID="lab-wearable">
+              {!WEARABLE_SERIAL_AVAILABLE
+                ? 'Web Serial is not available in this browser.'
+                : wearable !== 'on'
+                  ? 'wearable not connected'
+                  : spine
+                    ? `torso ${fmt(spine.imu_pitch_deg)} side ${fmt(spine.imu_roll_deg)} | upper ${fmt(spine.spine_upper_deg)} | mid ${fmt(spine.spine_mid_deg)} | lumbar ${fmt(spine.spine_lumbar_deg)}${live ? ' | sending' : ''}`
+                    : 'connected, waiting for calibration (stand still, then bend forward)'}
+            </ThemedText>
+            {wearableNote && (
+              <ThemedText type="small" themeColor="textSecondary">
+                {wearableNote}
+              </ThemedText>
+            )}
+          </Section>
+
+          <Section title="3. Workout">
             <TextInput style={inputStyle} value={exercise} onChangeText={setExercise} autoCapitalize="none" autoCorrect={false} placeholder="exercise (squat)" placeholderTextColor={theme.textSecondary} testID="lab-exercise" />
             <View style={styles.row}>
               <Btn label="Exercise: squat" onPress={() => setExercise('squat')} disabled={live} testID="lab-pick-squat" />
@@ -367,7 +446,7 @@ export function PoseLab() {
             ))}
           </Section>
 
-          <Section title="3. Push-up mini test">
+          <Section title="4. Push-up mini test">
             <ThemedText type="small" themeColor="textSecondary">
               One tap, no camera: creates a push-up workout, streams 5 simulated push-ups (the last two shallower) to the
               backend and checks the result.
@@ -387,11 +466,11 @@ export function PoseLab() {
             ))}
             <ThemedText type="small" themeColor="textSecondary">
               With a real camera: pick &quot;Exercise: push-up&quot; above, Start camera, Start workout, then do push-ups
-              side-on to the camera (so one elbow is clearly visible). The rep counter and the coach appear in section 2.
+              side-on to the camera (so one elbow is clearly visible). The rep counter and the coach appear in section 3.
             </ThemedText>
           </Section>
 
-          <Section title="4. No camera? Other tests">
+          <Section title="5. No camera? Other tests">
             <View style={styles.row}>
               <Btn label={simulating ? 'Simulating...' : 'Simulate 5 squats'} onPress={simulate} disabled={!live || simulating} testID="lab-simulate" />
             </View>

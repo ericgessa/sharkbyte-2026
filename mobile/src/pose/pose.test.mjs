@@ -7,6 +7,7 @@ import { computePoseAngles, jointAngleDeg, LM } from './angles.ts';
 import { LIBRARY_URL, MEDIAPIPE_VERSION, MODEL_URL, WASM_BASE } from './mediapipe.web.ts';
 import { parseServerEvent, PoseStreamer } from './protocol.ts';
 import { simulatedPushUpFrames, simulatedSquatFrames } from './simulate.ts';
+import { describeWearableLine, LineSplitter, parseWearableLine, SensorStreamer } from './wearable.ts';
 import { createWorkout, finishWorkout, getCoachReport, toWsUrl, WorkoutSocket } from './workout-client.ts';
 
 const near = (a, b, eps = 0.06) => assert.ok(Math.abs(a - b) <= eps, `${a} is not within ${eps} of ${b}`);
@@ -305,6 +306,79 @@ test('close() shuts the socket and nothing is sent afterwards', () => {
   assert.equal(s.sendPose(update(3)), false);
 });
 
+// ---------------------------------------------------------------- spine wearable (USB serial)
+
+const FULL_LINE = '{"t":123456,"imu_pitch_deg":30.10,"imu_roll_deg":-2.00,"spine_upper_deg":4.20,"spine_mid_deg":-1.50,"spine_lumbar_deg":18.00}';
+
+test('a firmware stream line becomes a sample with the device clock and every spine field', () => {
+  assert.deepEqual(parseWearableLine(FULL_LINE + '\r'), {
+    deviceMs: 123456,
+    data: { imu_pitch_deg: 30.1, imu_roll_deg: -2, spine_upper_deg: 4.2, spine_mid_deg: -1.5, spine_lumbar_deg: 18 },
+  });
+});
+
+test('a missing sensor is just a missing field', () => {
+  assert.deepEqual(parseWearableLine('{"t":5,"spine_lumbar_deg":12.5}'), { deviceMs: 5, data: { spine_lumbar_deg: 12.5 } });
+});
+
+test('non-stream lines, garbage and unusable samples are ignored, not forwarded', () => {
+  for (const line of [
+    '',
+    '[Calibration 1/2] Stand tall in your normal posture and hold STILL for 3 seconds...',
+    'torso   12.0 | upper    1.0 | mid    0.5 | lumbar    3.0',
+    '{"t":12,"spine_lumbar_deg":1', // cut off mid-line
+    '{"spine_lumbar_deg":1}', // no device clock
+    '{"t":-1,"spine_lumbar_deg":1}',
+    '{"t":1.5,"spine_lumbar_deg":1}',
+    '{"t":1}', // nothing measured
+    '{"t":1,"flex_raw":1780}', // not part of this project
+    '[1,2]',
+  ]) assert.equal(parseWearableLine(line), null, line);
+});
+
+test('values the server would reject are dropped, and unknown keys never reach it', () => {
+  const s = parseWearableLine('{"t":1,"spine_lumbar_deg":181,"spine_mid_deg":"3","imu_pitch_deg":20,"surprise":1}');
+  assert.deepEqual(s, { deviceMs: 1, data: { imu_pitch_deg: 20 } });
+});
+
+test('serial chunks are reassembled into whole lines', () => {
+  const sp = new LineSplitter();
+  assert.deepEqual(sp.push('{"t":1,"spine_'), []);
+  assert.deepEqual(sp.push('mid_deg":2}\r\n{"t":2'), ['{"t":1,"spine_mid_deg":2}']);
+  assert.deepEqual(sp.push(',"spine_mid_deg":3}\n\n'), ['{"t":2,"spine_mid_deg":3}', '']);
+  const tiny = new LineSplitter(10);
+  tiny.push('x'.repeat(50)); // a newline never came: dropped rather than growing forever
+  assert.deepEqual(tiny.push('ok\n'), ['ok']);
+});
+
+test('samples become numbered sensor_update messages for this workout, on the device clock', () => {
+  const st = new SensorStreamer('sid-9');
+  const a = st.next({ deviceMs: 1000, data: { spine_lumbar_deg: 5 } });
+  const b = st.next({ deviceMs: 1050, data: { spine_lumbar_deg: 6 } });
+  assert.deepEqual(a, { schema_version: 1, type: 'sensor_update', session_id: 'sid-9', device_id: 'esp32-spine', sequence: 0, timestamp_ms: 1000, data: { spine_lumbar_deg: 5 } });
+  assert.equal(b.sequence, 1);
+  assert.equal(b.timestamp_ms, 1050);
+});
+
+test('a flood is capped, and an ESP32 reboot (clock going backwards) is not mistaken for one', () => {
+  const st = new SensorStreamer('s', 'esp32-spine', 25); // at most one per 40 ms
+  assert.ok(st.next({ deviceMs: 1000, data: { spine_mid_deg: 1 } }));
+  assert.equal(st.next({ deviceMs: 1010, data: { spine_mid_deg: 1 } }), null);
+  assert.ok(st.next({ deviceMs: 1040, data: { spine_mid_deg: 1 } }));
+  const afterReboot = st.next({ deviceMs: 30, data: { spine_mid_deg: 1 } });
+  assert.ok(afterReboot && afterReboot.timestamp_ms === 30 && afterReboot.sequence === 2);
+});
+
+test('sensor updates go over the workout socket only once it is ready', () => {
+  const { s, ws } = socket();
+  const msg = new SensorStreamer('sid-9').next({ deviceMs: 1, data: { spine_upper_deg: 2 } });
+  ws.open();
+  assert.equal(s.sendSensor(msg), false);
+  ws.receive({ type: 'session_ready', session_id: 'sid-9', rep_count: 0, exercise: 'squat', analysis_supported: true, paused: false, coaching_enabled: true });
+  assert.equal(s.sendSensor(msg), true);
+  assert.deepEqual(ws.sent.at(-1), msg);
+});
+
 // ---------------------------------------------------------------- simulated squats
 
 test('simulated squats match the backend simulator: depths, rest, asymmetry, no unseen joints', () => {
@@ -339,4 +413,46 @@ test('the CDN library and WebAssembly version is exactly the version pinned in p
   // When the package is installed (not in CI, which skips npm install) its types must match the pinned version too.
   const installedFile = new URL('../../node_modules/@mediapipe/tasks-vision/package.json', import.meta.url);
   if (existsSync(installedFile)) assert.equal(JSON.parse(readFileSync(installedFile, 'utf8')).version, MEDIAPIPE_VERSION);
+});
+
+// ---------------------------------------------------------------- the wireless base station's lines
+
+const baseLine = (over = {}) =>
+  JSON.stringify({ type: 'data', seq: 12, t: 4567, phase: 'live', torso: 12.3, upper: 1.2, mid: -0.4, lumbar: 5.6, sensors: { C: 1.0, B: 6.6, A: 6.2, BNO: 7.4 }, ok: 15, lost: 0, ...over });
+
+test('a base-station "live" line becomes the same sample as a wired stream line', () => {
+  const s = parseWearableLine(baseLine());
+  assert.deepEqual(s, { deviceMs: 4567, data: { imu_pitch_deg: 12.3, spine_upper_deg: 1.2, spine_mid_deg: -0.4, spine_lumbar_deg: 5.6 } });
+});
+
+test('base-station lines are only used once the wearable is calibrated (phase "live")', () => {
+  for (const phase of ['neutral', 'bend_wait', 'bend_hold']) assert.equal(parseWearableLine(baseLine({ phase })), null, phase);
+});
+
+test('a section that is not available (null) is left out; a line with nothing usable is dropped', () => {
+  const s = parseWearableLine(baseLine({ upper: null, mid: null }));
+  assert.deepEqual(s.data, { imu_pitch_deg: 12.3, spine_lumbar_deg: 5.6 });
+  assert.equal(parseWearableLine(baseLine({ torso: null, upper: null, mid: null, lumbar: null })), null);
+});
+
+test('base-station status lines and out-of-range values never become samples', () => {
+  assert.equal(parseWearableLine('{"type":"status","msg":"paired with wearable AA:BB"}'), null);
+  assert.deepEqual(parseWearableLine(baseLine({ lumbar: 500 })).data.spine_lumbar_deg, undefined); // beyond the server's limit: dropped
+});
+
+test('base-station samples stream like any others: numbered, rate-capped, ready for the server', () => {
+  const streamer = new SensorStreamer('sess-1');
+  const a = streamer.next(parseWearableLine(baseLine({ t: 1000 })));
+  assert.deepEqual([a.type, a.device_id, a.sequence, a.timestamp_ms, a.data.spine_lumbar_deg], ['sensor_update', 'esp32-spine', 0, 1000, 5.6]);
+  assert.equal(streamer.next(parseWearableLine(baseLine({ t: 1010 }))), null); // faster than 25 Hz
+  assert.equal(streamer.next(parseWearableLine(baseLine({ t: 1060 }))).sequence, 1);
+});
+
+test('calibration prompts and status lines are described for the screen, samples are not', () => {
+  assert.match(describeWearableLine(baseLine({ phase: 'neutral' })), /stand tall/i);
+  assert.match(describeWearableLine(baseLine({ phase: 'bend_wait' })), /bend forward/i);
+  assert.equal(describeWearableLine('{"type":"status","msg":"paired with wearable"}'), 'paired with wearable');
+  assert.equal(describeWearableLine(baseLine()), null);
+  assert.equal(describeWearableLine('=== Spine test ==='), '=== Spine test ===');
+  assert.equal(describeWearableLine('  '), null);
 });

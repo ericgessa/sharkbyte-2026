@@ -214,9 +214,11 @@ Rules that matter:
   arrives right after the `rep_completed` that triggered it (no LLM during the workout).
 - **`rep_rejected`** = an attempt that did NOT count (`reason`: `partial_range` or `too_fast`). Show its `message`
   briefly ("That one didn't count: go a little lower...") and keep the rep counter as it is; `rep_count` is unchanged.
-- **ESP32 data:** if the phone talks to the wearable over Bluetooth, forward each sample over this same socket
-  (no separate endpoint or credentials): `ws.send(JSON.stringify({ schema_version: 1, type: 'sensor_update',
-  session_id: sessionId, device_id: 'esp32-01', sequence: n++, timestamp_ms: deviceMillis, data: { flex_raw, imu_pitch_deg } }))`.
+- **ESP32 data:** whichever client holds the workout socket forwards the wearable's samples over that same socket
+  (no separate endpoint or credentials; a second socket would replace the first). The `/pose` lab already does this
+  over USB with Web Serial (`src/pose/wearable.ts`, `wearable-serial.web.ts`): `parseWearableLine()` turns a firmware
+  line into a sample, `SensorStreamer` builds the `sensor_update`, `WorkoutSocket.sendSensor()` sends it. Data fields:
+  `imu_pitch_deg`, `imu_roll_deg`, `spine_upper_deg`, `spine_mid_deg`, `spine_lumbar_deg` (see event-contracts.md).
   Use the device's own clock for `timestamp_ms`; the server aligns it. Nothing comes back for these messages.
 - Add **Pause/Resume** and a clearly visible **"I'm in pain / stop"** button. They send a `user_signal`
   (`'pause' | 'resume' | 'pain'`), and the server answers with `session_state`:
@@ -276,13 +278,13 @@ Things to know:
   hidden one in `src/components/app-tabs.web.tsx` (no visible tab). Without it the router bounces `/pose` to `/`.
   Any new non-tab page on web needs the same.
 - Don't start the dev server with `CI=1`: that disables file watching, so edits are silently not served.
-- Tests: `npm run test:pose` (27 pure-logic tests, no browser). The backend suite also runs the TypeScript
+- Tests: `npm run test:pose` (36 pure-logic tests, no browser). The backend suite also runs the TypeScript
   (`server/tests/test_frontend_contract.py`) and checks that what it produces is accepted by the real server.
 
-**Push-up mini test:** section 3 of the lab has a *Run push-up test* button. It creates its own push-up workout,
+**Push-up mini test:** section 4 of the lab has a *Run push-up test* button. It creates its own push-up workout,
 streams 5 simulated push-ups (elbow angles, the last two shallower) to the backend and prints PASS or FAIL with one
 line per check (workout created, socket authenticated, 5 reps counted on the elbow, coach cue, 5 reps saved). It needs
-the API URL and token from section 2 and no camera. For a real-camera try, press *Exercise: push-up*, Start camera,
+the API URL and token from the lab's section 3 and no camera. For a real-camera try, press *Exercise: push-up*, Start camera,
 Start workout, and do push-ups side-on to the camera so one elbow is clearly visible. The push-up thresholds are
 untuned guesses.
 

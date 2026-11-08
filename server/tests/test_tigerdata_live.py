@@ -106,8 +106,8 @@ def test_insert_and_retrieve_with_session_association(tiger, sid):
 
 def test_large_batch_insert(tiger, sid):
     batch = [
-        SensorReading(time=BASE + timedelta(milliseconds=10 * i), session_id=sid, source="flex_sensor", sensor_id="esp32-01",
-                      metric_name="flex_value", metric_value=1000.0 + i)
+        SensorReading(time=BASE + timedelta(milliseconds=10 * i), session_id=sid, source="imu", sensor_id="esp32-01",
+                      metric_name="spine_lumbar", metric_value=(i % 300) / 10)
         for i in range(1200)
     ]
     assert tiger.insert_readings(batch) == 1200
@@ -181,11 +181,11 @@ def test_readings_in_a_time_window_raw_and_downsampled(tiger, sid):
 
 def test_sensor_overview_and_esp32_metrics(tiger, sid):
     readings, _ = build_workout(sid)
-    readings.append(SensorReading(time=BASE, session_id=sid, source="flex_sensor", sensor_id="esp32-01", metric_name="flex_value", metric_value=1800.0))
+    readings.append(SensorReading(time=BASE, session_id=sid, source="imu", sensor_id="esp32-01", metric_name="spine_lumbar", metric_value=18.0))
     readings.append(SensorReading(time=BASE, session_id=sid, source="imu", sensor_id="esp32-01", metric_name="imu_pitch", metric_value=12.5))
     tiger.insert_readings(readings)
     o = analytics.sensor_overview(tiger, sid)
-    assert o["metrics"]["flex_value"]["source"] == "flex_sensor" and o["metrics"]["imu_pitch"]["avg"] == 12.5
+    assert o["metrics"]["spine_lumbar"]["source"] == "imu" and o["metrics"]["imu_pitch"]["avg"] == 12.5
     assert o["readings"] == len(readings)
 
 
