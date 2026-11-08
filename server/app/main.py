@@ -72,6 +72,8 @@ def create_app(
         finally:
             for driver in list(application.state.room_drivers.values()):
                 driver.cancel()  # live 1v1 rooms end with the server
+            for task in list(application.state.report_tasks):
+                task.cancel()  # a report still being written is written again the next time it is asked for
             sweeper.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sweeper
@@ -98,7 +100,9 @@ def create_app(
     app.state.rooms = rooms if rooms is not None else GameRooms()  # live 1v1 rooms, in memory
     app.state.room_drivers = {}
     app.state.agent = agent if agent is not None else agent_from_env()  # LLM coach; rules-only unless configured
-    app.state.summary_cache = OrderedDict()  # finished workouts' recaps (immutable, so cacheable)
+    app.state.summary_cache = OrderedDict()  # recaps that could not be saved in Supabase (kept for this server run)
+    app.state.report_inflight = {}  # workout id -> the task writing its coach report (so a request joins it)
+    app.state.report_tasks = set()
     app.state.summary_limiter = KeyedLimiter(rate_per_s=6 / 60, burst=3)  # recaps can cost an LLM call
     # Per-user request limits (generous for a real app; stops a runaway client or a script from hammering the
     # backend and, through it, Supabase). Tests and deployments can replace these on app.state.

@@ -13,9 +13,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from app.schemas.events import CreateWorkoutRequest, DeleteAccountRequest, StatsOut, WorkoutOut, WorkoutSummaryOut
-from app.services import persistence
+from app.services import persistence, reports
 from app.services.exercises import DEFAULT_EXERCISE, all_exercises, for_stored_name
-from app.services.agent import rules_summary
 from app.services.analytics import readings_in_window
 from app.services.coach_context import build_coach_context
 from app.services.summary import compute_stats
@@ -287,11 +286,16 @@ def workout_analytics(session_id: UUID, request: Request, user_id: UserId) -> di
 
 @router.get("/api/workouts/{session_id}/coach-summary")
 async def coach_summary(session_id: UUID, request: Request, user_id: UserId) -> dict[str, Any]:
-    """A short plain-language recap of a workout, from both databases.
+    """The coach's report for a workout: a few plain sentences from both databases.
 
-    ``source`` is ``"agent"`` when the LLM coach wrote it and ``"rules"`` for the deterministic recap (the LLM is
-    off, unavailable, failed a safety check, or the user reported pain: then it is always the rules text).
-    Recaps of finished workouts are cached. Limited to a few per minute per user because each can cost an LLM call.
+    The report is written ONCE, when the workout finishes, and saved in Supabase (``workout_reports``), so this returns
+    the saved one and never pays for a second Gemini call. If it is still being written the request waits for it; for a
+    workout that has no saved report yet (older workouts, or one that is still open) it is written now.
+
+    ``source`` is ``"agent"`` when the AI coach (Gemini) wrote it and ``"rules"`` for the deterministic report (the AI coach
+    is off, unavailable, failed a safety check, or the user reported pain: then it is always the rules text; a saved
+    rules report is replaced by a Gemini one later if Gemini becomes available). ``saved`` says whether it is stored in
+    Supabase, and ``generated_at`` when it was written. Limited to a few per minute per user because each can cost an LLM call.
     """
     state = request.app.state
     if not state.summary_limiter.allow(user_id):
@@ -299,24 +303,7 @@ async def coach_summary(session_id: UUID, request: Request, user_id: UserId) -> 
             status.HTTP_429_TOO_MANY_REQUESTS, "too many recap requests; slow down", {"Retry-After": str(state.summary_limiter.retry_after_s)}
         )
     row = await asyncio.to_thread(_owned_session, request, session_id, user_id)
-    key = str(session_id)
-    if key in state.summary_cache:
-        text, source = state.summary_cache[key]
-        return {"summary": text, "source": source}
-
-    context = await asyncio.to_thread(build_coach_context, state.store, state.tiger, session_id)
-    exercise = for_stored_name((row.get("exercises") or {}).get("name", DEFAULT_EXERCISE))
-    fallback = rules_summary(context, exercise.analysis_supported, exercise.display_name.lower(), exercise.joint)
-    if exercise.analysis_supported:  # Gemini reports on every analyzed exercise (it is told which joint was counted)
-        report = {**context, "exercise": exercise.display_name, "counted_joint": exercise.joint}
-        text, source = await state.agent.summarize(report, fallback)
-    else:  # only logged, nothing measured to report on: the deterministic "your workout was logged" text
-        text, source = fallback, "rules"
-    if row["status"] == "completed":  # an active workout's recap would go stale
-        state.summary_cache[key] = (text, source)
-        while len(state.summary_cache) > 200:
-            state.summary_cache.popitem(last=False)
-    return {"summary": text, "source": source}
+    return await reports.get_report(request.app, row)
 
 
 @router.get("/api/workouts/{session_id}/readings")
@@ -405,4 +392,5 @@ async def finish_workout(session_id: UUID, request: Request, user_id: UserId) ->
         done = await asyncio.to_thread(_owned_session, request, session_id, user_id)
     request.app.state.live.remove(session_id)
     logger.info("session finished id=%s reps=%d", session_id, total)
+    reports.schedule_on_finish(request.app, done)  # the coach report is written and saved in the background
     return to_out(done)

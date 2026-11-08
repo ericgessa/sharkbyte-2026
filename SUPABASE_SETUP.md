@@ -89,6 +89,8 @@ The schema lives in `supabase/migrations/` and must be applied in filename order
 3. `20261107000003_profile_trigger_and_seed.sql`: profile-on-signup trigger, `squat` exercise
 4. `20261108000001_grit_games.sql`: GRIT Games results and finished races (additive; touches no existing table). Until it
    is applied the Games screens still play, but results are not saved and the API answers 503 with this file's name.
+5. `20261108000002_workout_reports.sql`: the coach's report saved once for every finished workout (`workout_reports`). Additive.
+   Until it is applied the report still works but is only kept in the server's memory (`saved: false`).
 
 ### Option A: Supabase CLI to the cloud project (recommended)
 
