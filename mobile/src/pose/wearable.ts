@@ -1,9 +1,16 @@
 /**
- * The spine wearable (hardware/firmware/spine_test) -> the backend's `sensor_update` message.
+ * The spine wearable -> the backend's `sensor_update` message.
  * Pure: no DOM, no React Native. The USB link itself lives in wearable-serial.web.ts.
  *
- * In stream mode the ESP32 prints one JSON object per line, e.g.
- *   {"t":123456,"imu_pitch_deg":30.1,"imu_roll_deg":-2.0,"spine_upper_deg":4.2,"spine_mid_deg":-1.5,"spine_lumbar_deg":18.0}
+ * Two kinds of line are understood, so the same page works with either board plugged in:
+ *
+ * 1. `hardware/firmware/spine_test` (wired, after sending `s`):
+ *      {"t":123456,"imu_pitch_deg":30.1,"imu_roll_deg":-2.0,"spine_upper_deg":4.2,"spine_mid_deg":-1.5,"spine_lumbar_deg":18.0}
+ * 2. `hardware/firmware/base_station` (the wearable's ESP-NOW link, printed over USB):
+ *      {"type":"data","seq":12,"t":4567,"phase":"live","torso":12.3,"upper":1.2,"mid":-0.4,"lumbar":5.6,"sensors":{...},"ok":15,"lost":0}
+ *    `torso` is the BNO085 forward tilt (`imu_pitch_deg`); `upper`/`mid`/`lumbar` are the section angles. Lines whose
+ *    `phase` is not `live` (the wearable is still calibrating) carry no usable angles and are not sent to the server.
+ *
  * `t` is the ESP32's own clock (ms since boot); the server anchors each device's clock separately.
  */
 
@@ -56,15 +63,43 @@ export function parseWearableLine(line: string): WearableSample | null {
     return null;
   }
   if (typeof v !== 'object' || v === null) return null;
-  const o = v as Record<string, unknown>;
-  const t = o.t;
+  const raw = v as Record<string, unknown>;
+  const t = raw.t;
   if (typeof t !== 'number' || !Number.isInteger(t) || t < 0) return null;
+  let o = raw;
+  if (raw.type === 'data') {
+    if (raw.phase !== 'live') return null; // still calibrating: the angles are not relative to a neutral posture yet
+    o = { imu_pitch_deg: raw.torso, spine_upper_deg: raw.upper, spine_mid_deg: raw.mid, spine_lumbar_deg: raw.lumbar };
+  } else if (raw.type !== undefined) {
+    return null; // a status line or anything else
+  }
   const data: SpineData = {};
   for (const f of FIELDS) {
     const x = o[f];
     if (typeof x === 'number' && Number.isFinite(x) && Math.abs(x) <= LIMITS[f]) data[f] = x;
   }
   return Object.keys(data).length > 0 ? { deviceMs: t, data } : null;
+}
+
+const PHASE_PROMPTS: Record<string, string> = {
+  neutral: 'Calibration 1/2: stand tall in neutral posture and hold still...',
+  bend_wait: 'Calibration 2/2: slowly bend forward as far as is comfortable and hold...',
+  bend_hold: 'Hold it...',
+};
+
+/** A short human note for a line that is not a stream sample (calibration prompts, status), or null to ignore it. */
+export function describeWearableLine(line: string): string | null {
+  const s = line.trim();
+  if (!s) return null;
+  if (!s.startsWith('{')) return s; // boot messages and prompts from the firmware, shown as they are
+  try {
+    const v = JSON.parse(s) as { type?: unknown; msg?: unknown; phase?: unknown };
+    if (v.type === 'status' && typeof v.msg === 'string') return v.msg;
+    if (v.type === 'data' && typeof v.phase === 'string' && v.phase !== 'live') return PHASE_PROMPTS[v.phase] ?? `Wearable: ${v.phase}`;
+  } catch {
+    // half a line
+  }
+  return null;
 }
 
 /** Serial data arrives in arbitrary chunks; this turns them back into whole lines. */

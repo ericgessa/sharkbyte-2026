@@ -14,7 +14,7 @@ import { simulatedPushUpFrames, simulatedSquatFrames } from '@/pose/simulate';
 import { createWorkout, finishWorkout, getCoachReport, WorkoutSocket, type CoachReport, type CreatedWorkout } from '@/pose/workout-client';
 import { getApiUrl } from '@/utils/api-url';
 import { getAccessToken, signOut } from '@/utils/auth';
-import { parseWearableLine, SensorStreamer, type SpineData } from '@/pose/wearable';
+import { describeWearableLine, parseWearableLine, SensorStreamer, type SpineData } from '@/pose/wearable';
 import { connectWearable, WEARABLE_SERIAL_AVAILABLE, type WearableConnection } from '@/pose/wearable-serial';
 
 const CLOSE_HINT: Record<number, string> = {
@@ -112,7 +112,7 @@ export function PoseLab() {
       if (update) socketRef.current?.sendSensor(update);
       return;
     }
-    const text = line.trim();
+    const text = describeWearableLine(line);
     if (!text) return;
     // The board restarted (or was just plugged in): put it back into stream mode.
     if (text.startsWith('=== Spine test')) void wearableRef.current?.send('s');
@@ -374,7 +374,7 @@ export function PoseLab() {
 
           <Section title="2. Spine wearable (USB)">
             <ThemedText type="small" themeColor="textSecondary">
-              Plug the ESP32 running hardware/firmware/spine_test into this computer. Close the Arduino Serial Monitor
+              Plug the ESP32 into this computer: either the one running hardware/firmware/spine_test (wired) or the BASE STATION that receives the wireless wearable. Close the Arduino Serial Monitor
               first: only one program can use the port. Desktop Chrome or Edge only. Readings go to the backend while a
               workout is running.
             </ThemedText>
