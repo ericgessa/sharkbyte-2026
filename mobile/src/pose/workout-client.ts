@@ -8,6 +8,7 @@
 
 import type { PoseUpdate, ServerEvent, UserSignal } from './protocol';
 import { parseServerEvent } from './protocol';
+import type { SensorUpdate } from './wearable';
 
 export type CreatedWorkout = {
   session_id: string;
@@ -144,6 +145,13 @@ export class WorkoutSocket {
 
   /** false if not connected/authenticated yet (the frame is simply dropped; the next one will do). */
   sendPose(update: PoseUpdate): boolean {
+    if (!this.isReady) return false;
+    this.ws!.send(JSON.stringify(update));
+    return true;
+  }
+
+  /** Spine wearable data, relayed over this same socket (the server allows one socket per workout). */
+  sendSensor(update: SensorUpdate): boolean {
     if (!this.isReady) return false;
     this.ws!.send(JSON.stringify(update));
     return true;

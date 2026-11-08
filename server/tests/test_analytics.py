@@ -88,12 +88,12 @@ def test_sensor_overview_summarises_each_metric():
     tiger = FakeTiger()
     tiger.result = [
         {"source": "camera", "metric_name": "left_knee_angle", "n": 100, "avg_v": 120.0, "min_v": 85.0, "max_v": 170.0, "first_t": T0, "last_t": T0 + timedelta(seconds=9)},
-        {"source": "flex_sensor", "metric_name": "flex_value", "n": 40, "avg_v": 1800.0, "min_v": 1200.0, "max_v": 2500.0, "first_t": T0 + timedelta(seconds=1), "last_t": T0 + timedelta(seconds=10)},
+        {"source": "imu", "metric_name": "spine_lumbar", "n": 40, "avg_v": 12.0, "min_v": 2.0, "max_v": 25.0, "first_t": T0 + timedelta(seconds=1), "last_t": T0 + timedelta(seconds=10)},
     ]
     out = analytics.sensor_overview(tiger, SID)
-    assert out["readings"] == 140 and set(out["metrics"]) == {"left_knee_angle", "flex_value"}
+    assert out["readings"] == 140 and set(out["metrics"]) == {"left_knee_angle", "spine_lumbar"}
     assert out["first_time"] == T0.isoformat() and out["last_time"] == (T0 + timedelta(seconds=10)).isoformat()
-    assert out["metrics"]["flex_value"]["source"] == "flex_sensor"
+    assert out["metrics"]["spine_lumbar"]["source"] == "imu"
 
 
 def test_sensor_overview_with_no_data():

@@ -8,13 +8,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SourceName = Literal["camera", "flex_sensor", "imu"]
+SourceName = Literal["camera", "imu"]
 
 METRIC_NAME_PATTERN = r"^[a-z0-9_]{1,64}$"
 
 # Field name in a sensor_update  ->  (source, stored metric_name)
 SENSOR_FIELDS: dict[str, tuple[str, str]] = {
-    "flex_raw": ("flex_sensor", "flex_value"),
+    "spine_upper_deg": ("imu", "spine_upper"),
+    "spine_mid_deg": ("imu", "spine_mid"),
+    "spine_lumbar_deg": ("imu", "spine_lumbar"),
     "imu_pitch_deg": ("imu", "imu_pitch"),
     "imu_roll_deg": ("imu", "imu_roll"),
     "imu_yaw_deg": ("imu", "imu_yaw"),
@@ -29,12 +31,19 @@ class _Strict(BaseModel):
 
 
 class SensorData(_Strict):
-    """One ESP32 sample. Units: raw ADC counts for flex, degrees for angles, g for acceleration.
+    """One ESP32 sample from the spine wearable (hardware/README.md). Units: degrees for angles, g for acceleration.
 
-    Sensor readings are NOT anatomical angles until calibrated; they are stored as measured.
+    ``spine_*_deg`` is the bend WITHIN one section of the back (the tilt of the sensor above it minus the sensor
+    below it), + = bending forward, relative to the wearer's calibrated neutral posture:
+    upper = BNO085 minus MPU A, mid = MPU A minus MPU B, lumbar = MPU B minus MPU C (sacrum).
+    ``imu_pitch_deg`` / ``imu_roll_deg`` are the upper-back (BNO085) forward and sideways tilt.
+
+    Readings are measured tilt, not validated anatomical angles; they are stored as measured.
     """
 
-    flex_raw: float | None = Field(default=None, ge=0, le=1_000_000, allow_inf_nan=False)
+    spine_upper_deg: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
+    spine_mid_deg: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
+    spine_lumbar_deg: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
     imu_pitch_deg: float | None = Field(default=None, ge=-360, le=360, allow_inf_nan=False)
     imu_roll_deg: float | None = Field(default=None, ge=-360, le=360, allow_inf_nan=False)
     imu_yaw_deg: float | None = Field(default=None, ge=-360, le=360, allow_inf_nan=False)

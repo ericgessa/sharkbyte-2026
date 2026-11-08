@@ -4,7 +4,7 @@
 
 Needs BOTH Supabase (SUPABASE_*) and Tiger Data (TIGERDATA_URL, migrations applied) in server/.env.
 Runs the real app in-process: throwaway user -> workout -> WebSocket with SIMULATED camera frames plus
-SIMULATED ESP32 flex/IMU updates (synthetic data, clearly not real hardware) -> finish, then reads the
+SIMULATED ESP32 spine/IMU updates (synthetic data, clearly not real hardware) -> finish, then reads the
 results back from BOTH databases and checks they agree on the same session_id.
 
 By default it deletes everything it created. With --keep, the user, Supabase rows and Tiger Data
@@ -92,7 +92,7 @@ def main() -> int:
                         ws.send_text(json.dumps({
                             "schema_version": 1, "type": "sensor_update", "session_id": sid, "device_id": "esp32-01",
                             "sequence": sensor_msgs, "timestamp_ms": f["timestamp_ms"] - 1_000_000,  # a different clock
-                            "data": {"flex_raw": round(2000 - (170 - a) * 5, 1), "imu_pitch_deg": round((170 - a) * 0.3, 2)},
+                            "data": {"spine_lumbar_deg": round((170 - a) * 0.1, 2), "imu_pitch_deg": round((170 - a) * 0.3, 2)},
                         }))
                         sensor_msgs += 1
                 events = [ws.receive_json() for _ in range(REPS + 1)]
@@ -116,7 +116,7 @@ def main() -> int:
                 time.sleep(0.5)
             check(f"Tiger Data: high-frequency readings stored under the same session_id ({n} rows)", n > 100)
             ov = analytics.sensor_overview(tiger, UUID(sid))
-            check("Tiger Data: camera + flex + IMU metrics all present", {"left_knee_angle", "flex_value", "imu_pitch"} <= set(ov["metrics"]))
+            check("Tiger Data: camera + spine + IMU metrics all present", {"left_knee_angle", "spine_lumbar", "imu_pitch"} <= set(ov["metrics"]))
 
             # --- SQL analytics over Tiger Data, windows from Supabase ------------------------
             body = client.get(f"/api/workouts/{sid}/analytics", headers=headers).json()

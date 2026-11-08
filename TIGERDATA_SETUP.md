@@ -15,7 +15,7 @@ Both refer to the same workout by its `session_id` UUID.
 | Migration and analytics SQL are valid PostgreSQL syntax | **Checked** with the PostgreSQL parser |
 | **Migration applied to a real Tiger Data service** | **Done** on 2026-11-07 (PostgreSQL 18.6, TimescaleDB 2.31.0): `sensor_readings` is a hypertable, so the `tsdb.hypertable` syntax and the unique index work |
 | **Analytics SQL returns correct numbers on real TimescaleDB** | **Verified.** The 12 live tests (`tests/test_tigerdata_live.py`) pass: known-answer data gives the exact expected depth, range and trend values, low-confidence glitch frames are ignored, batch insert works, retried batches create no duplicates. Disabling the confidence filter makes 4 of them fail, so they are not vacuous |
-| Whole two-database flow | **Verified live:** `scripts.e2e_tigerdata` passes 10/10; the running shared server wrote camera + flex + IMU readings under the same `session_id` and its `/analytics` endpoint summarized them |
+| Whole two-database flow | **Verified live:** `scripts.e2e_tigerdata` passes 10/10; the running shared server wrote camera + flex + IMU readings under the same `session_id` and its `/analytics` endpoint summarized them. That run used the old contract; the script now sends `spine_lumbar_deg` instead of flex and hasn't been re-run live |
 | What is still **not** verified | Compression/columnstore actually converting chunks (needs data older than one chunk interval); behavior at real camera/ESP32 data rates and volumes; any real hardware data (everything so far is simulated) |
 
 Section 4 shows how to re-run all of this yourself.
@@ -83,9 +83,9 @@ The migration creates the `sensor_readings` hypertable:
 | --- | --- |
 | `time` (timestamptz) | when the measurement happened, in **server time** (see "Clocks" below) |
 | `session_id` (uuid) | the Supabase `workout_sessions.id`; **no foreign key** because it is a different database |
-| `source` | `camera`, `flex_sensor` or `imu` |
-| `sensor_id` | hardware id such as `esp32-01` (empty for the camera) |
-| `metric_name` | `left/right_knee_angle`, `left/right_elbow_angle`, `left/right_hip_angle`, `flex_value`, `imu_pitch`, `imu_roll`, `imu_yaw`, `accel_x/y/z`. The built-in analytics summarize **knee** angles (squat); elbow/hip readings are stored and queryable through `/readings` and SQL but not summarized yet |
+| `source` | `camera` or `imu` (the migration's check also allows `flex_sensor`, but the app no longer writes it: the project has no flex sensors) |
+| `sensor_id` | hardware id such as `esp32-spine` (empty for the camera) |
+| `metric_name` | `left/right_knee_angle`, `left/right_elbow_angle`, `left/right_hip_angle`, `spine_upper`, `spine_mid`, `spine_lumbar`, `imu_pitch`, `imu_roll`, `imu_yaw`, `accel_x/y/z`. The built-in analytics summarize **knee** angles (squat); elbow/hip readings are stored and queryable through `/readings` and SQL but not summarized yet |
 | `metric_value` | the number |
 | `metadata` (jsonb) | camera rows carry `{"confidence": 0.0-1.0}` so analytics can ignore unreliable frames |
 
@@ -134,7 +134,7 @@ where session_id = '<session-uuid>' group by 1, 2 order by 1;
         coaching event     ▼                     ▼  written in batches of up to 500 / 1 s
                       Supabase               Tiger Data
               users, auth, sessions,      sensor_readings hypertable
-              reps, coaching events       (camera angles, flex, IMU)
+              reps, coaching events       (camera angles, spine IMU)
                            └────── same session_id UUID ──────┘
                                          │
               GET /api/workouts/{id}/analytics: Supabase facts + Tiger Data SQL summaries
@@ -157,11 +157,11 @@ where session_id = '<session-uuid>' group by 1, 2 order by 1;
   server time, which keeps spacing between that source's samples exact. Alignment *between* sources is only as
   good as network latency (tens of ms), so join them by time bucket (see the correlation query), never by
   equal timestamps. A source whose clock jumps by more than 60 s (e.g. an ESP32 reboot) is re-anchored.
-* **ESP32 transport.** AGENTS.md left this open. The app accepts `sensor_update` on the *same* authenticated
-  workout WebSocket, so a phone relaying ESP32 data over Bluetooth needs no extra endpoint or credentials. Message
-  format: `docs/event-contracts.md`.
-* Sensor values are stored **as measured** (raw flex ADC counts, degrees, g). They are not anatomical angles
-  until calibrated.
+* **ESP32 transport.** The app accepts `sensor_update` on the *same* authenticated workout WebSocket, so the client
+  relaying ESP32 data needs no extra endpoint or credentials. For the MVP the wearable is plugged in over USB and
+  the `/pose` page relays it (`hardware/README.md`). Message format: `docs/event-contracts.md`.
+* Sensor values are stored **as measured** (degrees, g). The spine angles are relative to the wearer's calibrated
+  neutral posture, not validated anatomical angles.
 
 ## New API endpoints
 
@@ -212,12 +212,13 @@ select count(*) filter (where avg_deg < 110) as seconds_at_bottom
 from (select time_bucket('1 second', time) as b, avg(metric_value) as avg_deg
       from sensor_readings where session_id = '<sid>' and metric_name = 'left_knee_angle' group by 1) s;
 
--- Does the wearable flex sensor agree with the camera? (joined by 100 ms bucket, not exact timestamps)
+-- Does the lower back round as the squat deepens? Camera knee angle vs wearable lumbar bend
+-- (joined by 100 ms bucket, not exact timestamps; a strong negative correlation = more rounding at depth)
 with cam as (select time_bucket('100 milliseconds', time) as b, avg(metric_value) as knee
              from sensor_readings where session_id = '<sid>' and metric_name = 'left_knee_angle' group by 1),
-     flex as (select time_bucket('100 milliseconds', time) as b, avg(metric_value) as flex
-              from sensor_readings where session_id = '<sid>' and metric_name = 'flex_value' group by 1)
-select count(*) as paired_buckets, corr(cam.knee, flex.flex) as correlation from cam join flex using (b);
+     spine as (select time_bucket('100 milliseconds', time) as b, avg(metric_value) as lumbar
+               from sensor_readings where session_id = '<sid>' and metric_name = 'spine_lumbar' group by 1)
+select count(*) as paired_buckets, corr(cam.knee, spine.lumbar) as correlation from cam join spine using (b);
 
 -- First and last angle of the workout (TimescaleDB first()/last() aggregates)
 select first(metric_value, time) as start_deg, last(metric_value, time) as end_deg
@@ -232,13 +233,13 @@ select chunk_name, is_compressed from timescaledb_information.chunks where hyper
 I don't have the MLH "Best Use of Tiger Data" judging criteria; check the challenge page and adapt. These are
 the honest talking points and a demo that can all be shown:
 
-1. **Why time-series.** A 30 fps pose stream plus ESP32 flex/IMU is ~100+ rows/second per workout: the wrong
+1. **Why time-series.** A 30 fps pose stream plus the ESP32 spine IMUs is ~100+ rows/second per workout: the wrong
    shape for the product database, the right shape for a hypertable.
 2. **Run `python -m scripts.e2e_tigerdata --keep`.** It drives the real app with simulated camera and ESP32
    data and prints each check: Supabase holds the 5 reps and coaching event; Tiger Data holds the raw readings
    under the same `session_id`.
 3. **Show the SQL** in the Tiger Console: `time_bucket` range-of-motion buckets, the per-rep query, and the
-   flex-vs-camera correlation. Point out that the AI coach receives a ~1 KB summary from these queries, not
+   knee-vs-lumbar correlation. Point out that the AI coach receives a ~1 KB summary from these queries, not
    the stream.
 4. **Show resilience.** Stop or misconfigure `TIGERDATA_URL` and run a workout: counting and coaching still work
    (the offline tests cover this too).

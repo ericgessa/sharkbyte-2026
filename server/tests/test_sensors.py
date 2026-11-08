@@ -20,7 +20,7 @@ def update(**over):
         "device_id": "esp32-01",
         "sequence": 1,
         "timestamp_ms": 5000,
-        "data": {"flex_raw": 1780, "imu_pitch_deg": 12.4},
+        "data": {"imu_pitch_deg": 12.4, "spine_lumbar_deg": 3.5},
     }
     base.update(over)
     return base
@@ -31,7 +31,13 @@ def update(**over):
 
 def test_valid_sensor_update_parses():
     u = SensorUpdate.model_validate(update())
-    assert u.device_id == "esp32-01" and u.data.flex_raw == 1780 and u.data.imu_pitch_deg == 12.4
+    assert u.device_id == "esp32-01" and u.data.imu_pitch_deg == 12.4 and u.data.spine_lumbar_deg == 3.5
+
+
+def test_full_spine_wearable_sample_parses():
+    data = {"imu_pitch_deg": 30.1, "imu_roll_deg": -2.0, "spine_upper_deg": 4.2, "spine_mid_deg": -1.5, "spine_lumbar_deg": 18.0}
+    u = SensorUpdate.model_validate(update(data=data))
+    assert u.data.model_dump(exclude_none=True) == data
 
 
 @pytest.mark.parametrize(
@@ -39,13 +45,15 @@ def test_valid_sensor_update_parses():
     [
         {"data": {}},  # no values at all
         {"data": {"imu_pitch_deg": 9999}},  # impossible angle
-        {"data": {"flex_raw": -5}},  # negative ADC counts
+        {"data": {"spine_lumbar_deg": 181}},  # a section can't bend more than half a turn
+        {"data": {"spine_upper_deg": -181}},
+        {"data": {"flex_raw": 1780}},  # flex sensors are not part of this project
         {"data": {"accel_x_g": 500}},  # beyond any real accelerometer range
         {"device_id": ""},
         {"device_id": "bad id with spaces"},
         {"device_id": "x" * 65},
         {"sequence": -1},
-        {"data": {"flex_raw": 1, "surprise": 1}},  # unknown field
+        {"data": {"spine_mid_deg": 1, "surprise": 1}},  # unknown field
         {"unexpected": True},
     ],
 )
@@ -57,7 +65,7 @@ def test_invalid_sensor_updates_are_rejected(over):
 def test_nan_and_infinity_are_rejected():
     raw = (
         '{"schema_version":1,"type":"sensor_update","session_id":"%s","device_id":"d","sequence":1,'
-        '"timestamp_ms":1,"data":{"flex_raw":NaN}}' % SID
+        '"timestamp_ms":1,"data":{"spine_lumbar_deg":NaN}}' % SID
     )
     with pytest.raises(ValidationError):
         SensorUpdate.model_validate_json(raw)
@@ -72,6 +80,8 @@ def test_reading_requires_tz_aware_time_known_source_and_clean_metric_name():
         SensorReading(time=T.replace(tzinfo=None), **ok)
     with pytest.raises(ValidationError):
         SensorReading(time=T, **{**ok, "source": "thermometer"})
+    with pytest.raises(ValidationError):
+        SensorReading(time=T, **{**ok, "source": "flex_sensor"})  # removed: no flex sensors in this project
     for bad in ("Left Knee", "x; drop table", "", "a" * 65):
         with pytest.raises(ValidationError):
             SensorReading(time=T, **{**ok, "metric_name": bad})
@@ -93,10 +103,11 @@ def test_pose_readings_skip_a_knee_that_was_not_visible():
 
 
 def test_sensor_readings_map_fields_sources_and_device_id():
-    data = SensorData(flex_raw=1780, imu_pitch_deg=12.4, accel_z_g=0.98)
+    data = SensorData(spine_lumbar_deg=18.0, spine_upper_deg=4.2, imu_pitch_deg=12.4, accel_z_g=0.98)
     rs = {r.metric_name: r for r in sensor_readings(SID, T, "esp32-01", data)}
-    assert set(rs) == {"flex_value", "imu_pitch", "accel_z"}
-    assert rs["flex_value"].source == "flex_sensor" and rs["imu_pitch"].source == "imu"
+    assert set(rs) == {"spine_lumbar", "spine_upper", "imu_pitch", "accel_z"}
+    assert rs["spine_lumbar"].metric_value == 18.0
+    assert all(r.source == "imu" for r in rs.values())
     assert all(r.sensor_id == "esp32-01" and r.session_id == SID for r in rs.values())
 
 
