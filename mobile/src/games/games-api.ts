@@ -113,3 +113,9 @@ export async function getCoachSummary(apiUrl: string, token: string, workoutSess
   if (!res.ok) throw await failure(res);
   return (await res.json()) as { summary: string; source: 'agent' | 'rules' };
 }
+
+/** Removes one of your workouts (and its reps). Used by the local 2-player mode, whose rounds are not kept. */
+export async function deleteWorkout(apiUrl: string, token: string, workoutSessionId: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  const res = await fetchImpl(`${base(apiUrl)}/api/workouts/${workoutSessionId}`, { method: 'DELETE', headers: headers(token) });
+  if (!res.ok && res.status !== 404) throw await failure(res);
+}

@@ -8,5 +8,9 @@ export type PoseDetector = {
   readonly delegate: 'GPU' | 'CPU';
   /** Run pose detection on a video element or image. `timestampMs` is bumped if it is not strictly increasing. */
   detect(source: unknown, timestampMs: number): PoseFrame | null;
+  /** Everyone in view (up to the limit set with `setMaxPeople`), in no particular order. Web only. */
+  detectMany?(source: unknown, timestampMs: number): PoseFrame[];
+  /** How many people to look for (default 1). Raise it only while a screen needs it: more people cost more time. */
+  setMaxPeople?(count: number): void;
   close(): void;
 };

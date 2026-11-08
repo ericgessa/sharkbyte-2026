@@ -5,7 +5,7 @@ header, or `/games`). They use the exercises the server can count today: **squat
 
 | Game | What it is |
 | --- | --- |
-| **Rep Racer** | "Race your friends or beat your personal best." **Solo Goal** (target reps and a time limit), **Live 1v1** (room code, two webcams) and **Personal Best** (race a ghost of your own best recorded attempt). |
+| **Rep Racer** | "Race your friends or beat your personal best." **Solo Goal** (target reps and a time limit), **Live 1v1** (room code, two webcams), **Personal Best** (race a ghost of your own best recorded attempt) and **Local 2-Player** (two people, one camera, one computer). |
 
 (GRIT Bird, a body-position-controlled flying game, was built and then removed: it was too buggy and too hard to play.)
 
@@ -31,6 +31,17 @@ ExerciseController  (mobile/src/games/exercise-controller.ts)   ← shared by Ra
   `mobile/src/components/games/` glue it to the camera.
 * **You do not have to be in frame to start.** The race starts once the camera is on; the 3-2-1 countdown is the time
   to get into position. Reps only count after the server sees you standing (squat) or at the top (push-up).
+
+### Local 2-Player (two people, one camera)
+
+MediaPipe looks for two bodies (`numPoses` is raised to 2 only while this camera is on). Players are told apart by
+position, not by the detector's order: **Player 1 is whoever is on the left of the screen as you see yourselves
+(the preview is a mirror), Player 2 the right** (`mobile/src/games/people.ts`); one person plays the side of the
+screen they stand on, so stepping out and back in keeps your side. Each person's angles go to the server's rep counter
+through their own workout, so reps are counted exactly as in every other mode, and `FaceOff` (in `racer-engine.ts`)
+applies the same winner rules as the online 1v1. Both workouts belong to the signed-in account, so they are **deleted
+afterwards**: nothing from a local face-off is saved. It needs both people fully in view (stand 2-3 m back, about a
+metre apart); two overlapping bodies can confuse the tracker.
 
 ## Verified vs practice
 

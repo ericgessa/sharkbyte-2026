@@ -124,3 +124,75 @@ export function describeComparison(
   if (diff < 0) return { kind: 'fewer_reps', text: `${-diff} fewer rep${diff === -1 ? '' : 's'} than your previous attempt.` };
   return { kind: 'same_reps', text: `Same number of reps as your previous attempt (${previous.reps}).` };
 }
+
+export type FaceOffStatus = 'idle' | 'running' | 'finished';
+export type FaceOffEnd = 'target_reached' | 'time_up';
+
+/**
+ * Two people racing side by side on one camera (local 2-player). Same rules as the online 1v1: first to the target
+ * wins; at time-up the most reps wins, then whoever got their last rep first; nothing counted is a draw.
+ */
+export class FaceOff {
+  status: FaceOffStatus = 'idle';
+  reps: [number, number] = [0, 0];
+  repTimesMs: [number[], number[]] = [[], []];
+  elapsedMs = 0;
+  /** 0 or 1, or null for a draw (only meaningful once finished). */
+  winner: 0 | 1 | null = null;
+  end: FaceOffEnd | null = null;
+  readonly targetReps: number;
+  readonly timeLimitMs: number;
+
+  constructor(targetReps: number, timeLimitMs: number) {
+    this.targetReps = targetReps;
+    this.timeLimitMs = timeLimitMs;
+  }
+
+  start(): void {
+    this.status = 'running';
+    this.reps = [0, 0];
+    this.repTimesMs = [[], []];
+    this.elapsedMs = 0;
+    this.winner = null;
+    this.end = null;
+  }
+
+  tick(elapsedMs: number): void {
+    if (this.status !== 'running') return;
+    this.elapsedMs = Math.min(Math.max(elapsedMs, this.elapsedMs), this.timeLimitMs);
+    if (this.elapsedMs >= this.timeLimitMs) this.finishOnTime();
+  }
+
+  /** A rep the server counted for `slot`. Ignored unless the race is running. */
+  onRep(slot: 0 | 1, elapsedMs: number): boolean {
+    if (this.status !== 'running') return false;
+    this.tick(elapsedMs);
+    if (this.status !== 'running') return false;
+    this.reps[slot] += 1;
+    this.repTimesMs[slot].push(this.elapsedMs);
+    if (this.reps[slot] >= this.targetReps) {
+      this.status = 'finished';
+      this.end = 'target_reached';
+      this.winner = slot;
+    }
+    return true;
+  }
+
+  private finishOnTime(): void {
+    this.status = 'finished';
+    this.end = 'time_up';
+    const [a, b] = this.reps;
+    if (a !== b) this.winner = a > b ? 0 : 1;
+    else {
+      const last = (s: 0 | 1) => this.repTimesMs[s].at(-1) ?? Number.POSITIVE_INFINITY;
+      this.winner = a === 0 || last(0) === last(1) ? null : last(0) < last(1) ? 0 : 1;
+    }
+  }
+
+  progress(slot: 0 | 1): number {
+    return Math.min(1, this.reps[slot] / this.targetReps);
+  }
+  get remainingMs(): number {
+    return Math.max(0, this.timeLimitMs - this.elapsedMs);
+  }
+}

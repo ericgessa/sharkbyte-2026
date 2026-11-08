@@ -55,6 +55,18 @@ async function createPoseDetector(): Promise<PoseDetector> {
       const worldLandmarks = result.worldLandmarks[0] as Landmark[] | undefined;
       return landmarks && worldLandmarks ? { landmarks, worldLandmarks } : null;
     },
+    detectMany(source: unknown, timestampMs: number): PoseFrame[] {
+      const ts = Math.max(Math.floor(timestampMs), lastTs + 1);
+      lastTs = ts;
+      const result = landmarker.detectForVideo(source as HTMLVideoElement, ts);
+      return result.landmarks.flatMap((landmarks, i) => {
+        const worldLandmarks = result.worldLandmarks[i];
+        return worldLandmarks ? [{ landmarks: landmarks as Landmark[], worldLandmarks: worldLandmarks as Landmark[] }] : [];
+      });
+    },
+    setMaxPeople(count: number) {
+      void landmarker.setOptions({ numPoses: Math.max(1, Math.floor(count)) });
+    },
     close() {
       landmarker.close();
     },

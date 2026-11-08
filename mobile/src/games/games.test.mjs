@@ -6,8 +6,9 @@ import { test } from 'node:test';
 
 import { ExerciseController } from './exercise-controller.ts';
 import { AdaptiveTop, bodyPosition, FormMonitor, jointAngle, MSG, PROFILES, repFeedback } from './exercise.ts';
-import { GamesApiError, getBest, saveGameResult } from './games-api.ts';
-import { describeComparison, ghostAt, parseSetting, SoloRace } from './racer-engine.ts';
+import { deleteWorkout, GamesApiError, getBest, saveGameResult } from './games-api.ts';
+import { assignPlayers, screenCenterX } from './people.ts';
+import { describeComparison, FaceOff, ghostAt, parseSetting, SoloRace } from './racer-engine.ts';
 import { createRoom, joinRoom, parseRoomEvent, RoomSession } from './room-client.ts';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `${a} is not within ${eps} of ${b}`);
@@ -621,4 +622,95 @@ test('no API key or secret is referenced from the games code', () => {
     const text = readFileSync(new URL(f, import.meta.url), 'utf8');
     assert.doesNotMatch(text, /GEMINI_API_KEY|ANTHROPIC_API_KEY|SUPABASE_SECRET|sb_secret_/i, f);
   }
+});
+
+// ------------------------------------------------------------------ local 2-player: one camera, two people
+
+const lm = (hipX, vis = 0.9) => {
+  const pts = Array.from({ length: 33 }, () => ({ x: 0.5, y: 0.5, z: 0, visibility: 0 }));
+  pts[23] = { x: hipX - 0.02, y: 0.6, z: 0, visibility: vis };
+  pts[24] = { x: hipX + 0.02, y: 0.6, z: 0, visibility: vis };
+  return pts;
+};
+
+test('a person standing on the left of the screen (the preview is a mirror) is on the left', () => {
+  near(screenCenterX(lm(0.8)), 0.2); // raw image x 0.8 is the LEFT of a mirrored preview
+  near(screenCenterX(lm(0.25)), 0.75);
+});
+
+test('the centre falls back to the shoulders and is null when the body is not visible', () => {
+  const p = lm(0.5, 0);
+  p[11] = { x: 0.7, y: 0.3, z: 0, visibility: 0.9 };
+  p[12] = { x: 0.74, y: 0.3, z: 0, visibility: 0.9 };
+  near(screenCenterX(p), 1 - 0.72);
+  assert.equal(screenCenterX(lm(0.5, 0)), null);
+});
+
+test('two people: the leftmost on screen is Player 1, whatever order the detector listed them in', () => {
+  assert.deepEqual(assignPlayers([0.7, 0.3]), [1, 0]);
+  assert.deepEqual(assignPlayers([0.3, 0.7]), [0, 1]);
+  assert.deepEqual(assignPlayers([0.55, 0.9]), [0, 1]); // both on the right half: still left-to-right
+  assert.deepEqual(assignPlayers([0.1, null, 0.9]), [0, 2]); // an unusable detection is ignored
+});
+
+test('one person plays the side of the screen they stand on, and the other side is empty', () => {
+  assert.deepEqual(assignPlayers([0.2]), [0, null]);
+  assert.deepEqual(assignPlayers([0.8]), [null, 0]);
+  assert.deepEqual(assignPlayers([]), [null, null]);
+  assert.deepEqual(assignPlayers([null, null]), [null, null]);
+});
+
+test('players keep their side when one of them leaves and comes back', () => {
+  assert.deepEqual(assignPlayers([0.25, 0.75]), [0, 1]);
+  assert.deepEqual(assignPlayers([0.74]), [null, 0]); // left player stepped out: the right one is still Player 2
+  assert.deepEqual(assignPlayers([0.24, 0.76]), [0, 1]);
+});
+
+test('face-off: first to the target wins and later reps are ignored', () => {
+  const r = new FaceOff(3, 60_000);
+  r.start();
+  r.onRep(1, 2000);
+  r.onRep(0, 3000);
+  r.onRep(0, 5000);
+  assert.equal(r.status, 'running');
+  r.onRep(0, 7000);
+  assert.deepEqual([r.status, r.winner, r.end, r.reps], ['finished', 0, 'target_reached', [3, 1]]);
+  assert.equal(r.onRep(1, 8000), false);
+  assert.deepEqual(r.reps, [3, 1]);
+  near(r.progress(0), 1);
+  near(r.progress(1), 1 / 3);
+});
+
+test('face-off: at time-up the most reps wins, then the earlier last rep, else a draw', () => {
+  const run = (reps) => {
+    const r = new FaceOff(10, 30_000);
+    r.start();
+    for (const [slot, t] of reps) r.onRep(slot, t);
+    r.tick(31_000);
+    return r;
+  };
+  assert.equal(run([[0, 5000], [1, 6000], [1, 9000]]).winner, 1);
+  assert.equal(run([[0, 5000], [1, 6000]]).winner, 0); // equal reps: Player 1 was first
+  assert.equal(run([[1, 4000], [0, 6000]]).winner, 1);
+  const none = run([]);
+  assert.deepEqual([none.winner, none.end], [null, 'time_up']);
+  assert.equal(none.remainingMs, 0);
+});
+
+test('face-off: a rep after the buzzer does not count, and the race restarts cleanly', () => {
+  const r = new FaceOff(5, 10_000);
+  r.start();
+  r.onRep(0, 9000);
+  assert.equal(r.onRep(1, 10_400), false);
+  assert.equal(r.status, 'finished');
+  r.start();
+  assert.deepEqual([r.status, r.reps, r.winner, r.elapsedMs], ['running', [0, 0], null, 0]);
+});
+
+test('removing a workout calls DELETE and treats "already gone" as fine', async () => {
+  const f = fakeFetch({ 'DELETE /api/workouts/w1': { status: 204, body: null }, 'DELETE /api/workouts/w2': { status: 404, body: { detail: 'session not found' } }, 'DELETE /api/workouts/w3': { status: 503, body: { detail: 'try again' } } });
+  await deleteWorkout('http://api.test', 'tok', 'w1', f);
+  await deleteWorkout('http://api.test', 'tok', 'w2', f);
+  assert.equal(f.calls[0].method, 'DELETE');
+  await assert.rejects(deleteWorkout('http://api.test', 'tok', 'w3', f), /try again/);
 });
