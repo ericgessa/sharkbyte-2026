@@ -19,11 +19,7 @@
 // Serial commands: 'c' recalibrate | 'n' normal view | 'd' per-sensor debug view
 //                  's' stream mode: one JSON line per sample for the /pose page,
 //                      which forwards it to the server as a sensor_update.
-<<<<<<< HEAD
-// Stream line (fields with a missing sensor are left out):
-=======
 // Stream line (fields with a missing sensor are left out; same format as base_station):
->>>>>>> 6c3ba4d (Make the wireless base station speak the app's sensor format)
 //   {"t":123456,"imu_pitch_deg":30.1,"imu_roll_deg":-2.0,
 //    "spine_upper_deg":4.2,"spine_mid_deg":-1.5,"spine_lumbar_deg":18.0}
 

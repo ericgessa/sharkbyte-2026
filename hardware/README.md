@@ -60,17 +60,12 @@ Serial Monitor at 115200 baud.
    - `upper`: BNO085 minus MPU A
    - `mid`: MPU A minus MPU B
    - `lumbar`: MPU B minus MPU C (the most important one for form)
-<<<<<<< HEAD
-3. Serial commands: `c` recalibrate, `n` normal view, `d` per-sensor debug view (each sensor's own
-   tilt, plus BNO data rate), `s` stream mode (one JSON line per sample, for the server).
-=======
 3. Send `d` for the per-sensor debug view (each sensor's own tilt, plus BNO data rate), `n` to go back.
 4. Send `s` for stream mode: one JSON line per sample (20/s), the format the app reads
    (see "Data format" below). The `/pose` page sends `s` for you when it connects.
 
 `ROLL_SIGN` (in `spine_test` and `spine_wearable`): the app expects roll + = leaning to the wearer's right.
 Lean right in the debug view; if "BNO side" goes negative, set `ROLL_SIGN` to `-1`. Not checked on a body yet.
->>>>>>> 6c3ba4d (Make the wireless base station speak the app's sensor format)
 
 A flat-back hip hinge raises `torso` while the sections stay near 0.
 Rounding the lower back raises `lumbar`.
@@ -176,10 +171,7 @@ Back-shape cues need the camera to count the reps, so for coaching use way 1; wa
 - A section reacts to the wrong sensor: the AD0 wires don't match `MPU_AD0`
   (listed bottom to top: sacrum, lower back, mid back). Fix the wires or the array.
 - Two MPUs reading identical values: both are answering at 0x68; run `tests/ad0_phase_check`.
-<<<<<<< HEAD
-=======
 - Receiver or `/pose` page can't open the port: close the Arduino Serial Monitor (and the other of the two).
 - Base stays at "waiting for wearable": check the wearable is powered and both sketches share
   `PAIR_KEY` / `WIFI_CHANNEL`. The wearable's USB Serial Monitor shows `[radio] ...` status lines.
 - `lost` climbing fast: move the base station closer or off the back of the laptop.
->>>>>>> 6c3ba4d (Make the wireless base station speak the app's sensor format)
